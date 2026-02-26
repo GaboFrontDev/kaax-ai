@@ -1,0 +1,118 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kaaxai-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+    volumes:
+      - kaaxai_postgres_data:/var/lib/postgresql/data
+
+  redis-master:
+    image: redis:7-alpine
+    container_name: kaaxai-redis-master
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "56378:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  redis-sentinel-1:
+    image: redis:7-alpine
+    container_name: kaaxai-redis-sentinel-1
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        cat > /tmp/sentinel.conf <<CONF
+        port 26379
+        sentinel resolve-hostnames yes
+        sentinel monitor mymaster redis-master 6379 2
+        sentinel down-after-milliseconds mymaster 5000
+        sentinel failover-timeout mymaster 10000
+        sentinel parallel-syncs mymaster 1
+        CONF
+        redis-server /tmp/sentinel.conf --sentinel
+    ports:
+      - "56379:26379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "PING"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  redis-sentinel-2:
+    image: redis:7-alpine
+    container_name: kaaxai-redis-sentinel-2
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        cat > /tmp/sentinel.conf <<CONF
+        port 26379
+        sentinel resolve-hostnames yes
+        sentinel monitor mymaster redis-master 6379 2
+        sentinel down-after-milliseconds mymaster 5000
+        sentinel failover-timeout mymaster 10000
+        sentinel parallel-syncs mymaster 1
+        CONF
+        redis-server /tmp/sentinel.conf --sentinel
+    ports:
+      - "56380:26379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "PING"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  redis-sentinel-3:
+    image: redis:7-alpine
+    container_name: kaaxai-redis-sentinel-3
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        cat > /tmp/sentinel.conf <<CONF
+        port 26379
+        sentinel resolve-hostnames yes
+        sentinel monitor mymaster redis-master 6379 2
+        sentinel down-after-milliseconds mymaster 5000
+        sentinel failover-timeout mymaster 10000
+        sentinel parallel-syncs mymaster 1
+        CONF
+        redis-server /tmp/sentinel.conf --sentinel
+    ports:
+      - "56381:26379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "PING"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+volumes:
+  kaaxai_postgres_data:
