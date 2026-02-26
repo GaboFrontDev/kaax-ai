@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Any, AsyncIterator
 from uuid import uuid4
@@ -18,11 +19,96 @@ from app.observability.logging import set_correlation
 logger = logging.getLogger(__name__)
 
 
-def _extract_response_text(result: Any) -> str:
-    if isinstance(result, str):
-        return result
+_THINKING_BLOCK_RE = re.compile(r"(?is)<thinking\b[^>]*>.*?</thinking\s*>")
+_THINKING_TAG_RE = re.compile(r"(?is)</?thinking\b[^>]*>")
 
-    if isinstance(result, dict):
+
+def _strip_thinking_tags(text: str) -> str:
+    if not text:
+        return ""
+
+    without_blocks = _THINKING_BLOCK_RE.sub("", text)
+    without_tags = _THINKING_TAG_RE.sub("", without_blocks)
+    return without_tags.strip()
+
+
+class _ThinkingStreamFilter:
+    _OPEN_TAG = "<thinking"
+    _CLOSE_TAG = "</thinking>"
+
+    def __init__(self) -> None:
+        self._inside_thinking = False
+        self._pending = ""
+
+    @staticmethod
+    def _prefix_overlap_len(value: str, prefix: str) -> int:
+        max_len = min(len(value), len(prefix))
+        for size in range(max_len, 0, -1):
+            if value.endswith(prefix[:size]):
+                return size
+        return 0
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+
+        self._pending += chunk
+        output_parts: list[str] = []
+
+        while self._pending:
+            pending_lower = self._pending.lower()
+
+            if self._inside_thinking:
+                close_index = pending_lower.find(self._CLOSE_TAG)
+                if close_index == -1:
+                    overlap = self._prefix_overlap_len(pending_lower, self._CLOSE_TAG)
+                    self._pending = self._pending[-overlap:] if overlap else ""
+                    break
+
+                self._pending = self._pending[close_index + len(self._CLOSE_TAG) :]
+                self._inside_thinking = False
+                continue
+
+            open_index = pending_lower.find(self._OPEN_TAG)
+            if open_index == -1:
+                overlap = self._prefix_overlap_len(pending_lower, self._OPEN_TAG)
+                if overlap:
+                    output_parts.append(self._pending[:-overlap])
+                    self._pending = self._pending[-overlap:]
+                else:
+                    output_parts.append(self._pending)
+                    self._pending = ""
+                break
+
+            output_parts.append(self._pending[:open_index])
+            self._pending = self._pending[open_index:]
+            gt_index = self._pending.find(">")
+            if gt_index == -1:
+                break
+
+            self._pending = self._pending[gt_index + 1 :]
+            self._inside_thinking = True
+
+        return "".join(output_parts)
+
+    def finish(self) -> str:
+        if self._inside_thinking:
+            self._pending = ""
+            return ""
+        if self._OPEN_TAG.startswith(self._pending.lower()):
+            self._pending = ""
+            return ""
+        tail = self._pending
+        self._pending = ""
+        return tail
+
+
+def _extract_response_text(result: Any) -> str:
+    text = ""
+
+    if isinstance(result, str):
+        text = result
+    elif isinstance(result, dict):
         messages = result.get("messages")
         if isinstance(messages, list):
             for message in reversed(messages):
@@ -39,17 +125,21 @@ def _extract_response_text(result: Any) -> str:
                 if role in {"ai", "assistant"}:
                     text = _content_to_text(content)
                     if text:
-                        return text
+                        break
+            if text:
+                return _strip_thinking_tags(text)
 
         for key in ("output", "response", "answer"):
             if key in result:
                 text = _content_to_text(result.get(key))
                 if text:
-                    return text
+                    return _strip_thinking_tags(text)
 
-        return json.dumps(result, ensure_ascii=True)
+        text = json.dumps(result, ensure_ascii=True)
+    else:
+        text = _content_to_text(result)
 
-    return _content_to_text(result)
+    return _strip_thinking_tags(text)
 
 
 def build_langchain_tools(tool_registry: ToolRegistry) -> list[Any]:
@@ -292,6 +382,7 @@ class LangChainAgentRuntime:
                 chunks: list[str] = []
                 tools_used: list[str] = []
                 final_output: Any = None
+                thinking_filter = _ThinkingStreamFilter()
 
                 async for event in graph.astream_events(
                     {"messages": [{"role": "user", "content": user_text}]},
@@ -304,13 +395,15 @@ class LangChainAgentRuntime:
                     if event_name == "on_chat_model_stream":
                         text = _content_to_text(data.get("chunk"))
                         if text:
-                            chunks.append(text)
-                            yield StreamingEvent(
-                                type="content",
-                                content=text,
-                                thread_id=req.thread_id,
-                                run_id=run_id,
-                            )
+                            visible = thinking_filter.feed(text)
+                            if visible:
+                                chunks.append(visible)
+                                yield StreamingEvent(
+                                    type="content",
+                                    content=visible,
+                                    thread_id=req.thread_id,
+                                    run_id=run_id,
+                                )
                     elif event_name == "on_tool_start":
                         tool_name = str(event.get("name", "tool"))
                         if tool_name not in tools_used:
@@ -339,6 +432,12 @@ class LangChainAgentRuntime:
                 answer = "".join(chunks).strip()
                 if not answer and final_output is not None:
                     answer = _extract_response_text(final_output)
+                else:
+                    tail = thinking_filter.finish()
+                    if tail:
+                        cleaned_tail = _strip_thinking_tags(tail)
+                        if cleaned_tail:
+                            answer = f"{answer}{cleaned_tail}".strip()
                 if not answer:
                     answer = "No se generó respuesta del modelo."
 
