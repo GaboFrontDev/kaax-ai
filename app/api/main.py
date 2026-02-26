@@ -16,6 +16,7 @@ from app.api.routers.assist import router as assist_router
 from app.api.routers.feedback import router as feedback_router
 from app.api.routers.health import router as health_router
 from app.api.routers.slack_events import router as slack_router
+from app.api.routers.whatsapp_meta import router as whatsapp_meta_router
 from app.api.routers.whatsapp_twilio import router as whatsapp_twilio_router
 from app.infra.settings import get_settings
 from app.observability.logging import configure_logging
@@ -62,3 +63,4 @@ app.include_router(assist_router)
 app.include_router(feedback_router)
 app.include_router(slack_router)
 app.include_router(whatsapp_twilio_router)
+app.include_router(whatsapp_meta_router)

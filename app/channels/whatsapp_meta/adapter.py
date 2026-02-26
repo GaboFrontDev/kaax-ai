@@ -6,12 +6,13 @@ from app.agent.runtime import AssistRequest, StreamingEvent
 class WhatsAppMetaAdapter:
     async def normalize_inbound(self, raw: dict[str, object]) -> AssistRequest:
         from_number = str(raw.get("from", "unknown"))
+        to_number = str(raw.get("to", "unknown"))
         text = str(raw.get("text", ""))
-        message_id = str(raw.get("wa_message_id", "msg"))
         return AssistRequest(
             user_text=text,
             requestor=f"wa-meta:{from_number}",
-            thread_id=f"wa-meta:{from_number}:{message_id}",
+            # Keep stable memory context for the same user and business number.
+            thread_id=f"wa-meta:{to_number}:{from_number}",
             stream=False,
         )
 

@@ -85,6 +85,10 @@ class Settings:
     langchain_summarization_enabled: bool
     whatsapp_twilio_auth_token: str | None
     whatsapp_twilio_webhook_url: str | None
+    whatsapp_meta_verify_token: str | None
+    whatsapp_meta_app_secret: str | None
+    whatsapp_meta_access_token: str | None
+    whatsapp_meta_api_version: str
 
     @staticmethod
     def from_env() -> "Settings":
@@ -146,6 +150,10 @@ class Settings:
             langchain_summarization_enabled=_bool_env("LANGCHAIN_SUMMARIZATION_ENABLED", True),
             whatsapp_twilio_auth_token=os.getenv("WHATSAPP_TWILIO_AUTH_TOKEN"),
             whatsapp_twilio_webhook_url=os.getenv("WHATSAPP_TWILIO_WEBHOOK_URL"),
+            whatsapp_meta_verify_token=os.getenv("WHATSAPP_META_VERIFY_TOKEN"),
+            whatsapp_meta_app_secret=os.getenv("WHATSAPP_META_APP_SECRET"),
+            whatsapp_meta_access_token=os.getenv("WHATSAPP_META_ACCESS_TOKEN"),
+            whatsapp_meta_api_version=os.getenv("WHATSAPP_META_API_VERSION", "v21.0"),
         )
 
 

@@ -67,6 +67,15 @@ export WHATSAPP_TWILIO_AUTH_TOKEN=<your_twilio_auth_token>
 export WHATSAPP_TWILIO_WEBHOOK_URL=https://<your-ngrok-subdomain>.ngrok-free.app/webhooks/whatsapp/twilio
 ```
 
+Para canal WhatsApp via Meta Cloud API (inbound + respuesta automática):
+
+```bash
+export WHATSAPP_META_VERIFY_TOKEN=<your_verify_token>
+export WHATSAPP_META_APP_SECRET=<your_meta_app_secret>   # recomendado
+export WHATSAPP_META_ACCESS_TOKEN=<your_meta_access_token>
+export WHATSAPP_META_API_VERSION=v21.0
+```
+
 ## Endpoints
 
 - `GET /health`
@@ -76,6 +85,8 @@ export WHATSAPP_TWILIO_WEBHOOK_URL=https://<your-ngrok-subdomain>.ngrok-free.app
 - `POST /api/agent/feedback`
 - `POST /slack/events`
 - `POST /webhooks/whatsapp/twilio`
+- `GET /webhooks/whatsapp/meta`
+- `POST /webhooks/whatsapp/meta`
 
 ## Idempotency
 
@@ -131,3 +142,18 @@ En Twilio Sandbox for WhatsApp:
 - Configura `WHEN A MESSAGE COMES IN` con `https://<ngrok>/webhooks/whatsapp/twilio`
 - Método: `HTTP POST`
 - Envía un mensaje al número sandbox y valida la respuesta del agente.
+
+## Flujo recomendado local (WhatsApp Meta Cloud API)
+
+```bash
+# terminal 1
+make run-api-bedrock
+
+# terminal 2
+ngrok http 8200
+```
+
+En Meta App Dashboard (Webhooks):
+- Callback URL: `https://<ngrok>/webhooks/whatsapp/meta`
+- Verify token: debe coincidir con `WHATSAPP_META_VERIFY_TOKEN`
+- Suscribe el campo `messages` del producto WhatsApp.
