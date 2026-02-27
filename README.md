@@ -121,6 +121,89 @@ export WHATSAPP_META_API_VERSION=v21.0
 - `AGENT_RUNTIME_STRICT=true`: falla startup si Bedrock/LangChain no inicializa (sin fallback silencioso).
 - Si `AGENT_RUNTIME_BACKEND=langchain` y `CHECKPOINT_BACKEND=postgres`, se activa checkpoint nativo de LangGraph (`AsyncPostgresSaver`) para memoria conversacional por `thread_id`.
 
+## Logging
+
+- `LOG_LEVEL=INFO|DEBUG|WARNING|ERROR`
+- `LOG_FORMAT=pretty|json`
+  - `pretty`: formato legible para desarrollo local.
+  - `json`: formato ECS para observabilidad/ELK.
+- `LOG_COLORIZED=true|false` (aplica a `pretty`)
+
+## Interaction Metrics (DB only)
+
+Las metricas se persisten en DB en `interaction_events` (no endpoint).
+
+Configuracion:
+
+```bash
+# auto: usa postgres si hay pool disponible, si no memory
+export INTERACTION_METRICS_BACKEND=auto
+export INTERACTION_METRICS_TABLE=interaction_events
+```
+
+Vista recomendada (ultimas 24h en una sola fila):
+
+```sql
+SELECT
+  calculated_at,
+  events,
+  inbound_messages,
+  outbound_messages,
+  failed_outbound_messages,
+  unique_users,
+  active_threads,
+  lead_total,
+  lead_qualified,
+  lead_in_review,
+  lead_disqualified,
+  lead_qualification_rate,
+  channels,
+  top_users
+FROM interaction_metrics_24h;
+```
+
+Consulta base equivalente (si no quieres usar vista):
+
+```sql
+SELECT
+  COUNT(*) FILTER (WHERE direction='inbound')  AS inbound_messages,
+  COUNT(*) FILTER (WHERE direction='outbound') AS outbound_messages,
+  COUNT(*) FILTER (WHERE direction='outbound' AND success=FALSE) AS failed_outbound_messages,
+  COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '') AS unique_users,
+  COUNT(DISTINCT thread_id) AS active_threads
+FROM interaction_events
+WHERE event_at >= NOW() - INTERVAL '24 hours';
+```
+
+Top usuarios por actividad:
+
+```sql
+SELECT
+  user_id,
+  COUNT(*) FILTER (WHERE direction='inbound') AS inbound_messages,
+  MAX(event_at) AS last_seen,
+  ARRAY_AGG(DISTINCT channel) AS channels
+FROM interaction_events
+WHERE event_at >= NOW() - INTERVAL '24 hours'
+  AND user_id IS NOT NULL
+  AND user_id <> ''
+GROUP BY user_id
+ORDER BY inbound_messages DESC, last_seen DESC
+LIMIT 20;
+```
+
+Resumen de leads en CRM:
+
+```sql
+SELECT
+  COUNT(*) AS total,
+  COUNT(*) FILTER (WHERE lead_status='calificado') AS qualified,
+  COUNT(*) FILTER (WHERE lead_status='en_revision') AS in_review,
+  COUNT(*) FILTER (WHERE lead_status='no_calificado') AS disqualified
+FROM crm_leads
+WHERE created_at >= NOW() - INTERVAL '24 hours';
+```
+
 ## Pruebas con Docker (PostgreSQL real)
 
 ```bash

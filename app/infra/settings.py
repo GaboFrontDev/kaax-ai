@@ -45,6 +45,8 @@ class Settings:
     api_tokens: set[str]
     deploy_env: str
     log_level: str
+    log_format: str
+    log_colorized: bool
     sentry_dsn: str | None
     checkpoint_backend: str
     attachment_backend: str
@@ -70,6 +72,8 @@ class Settings:
     db_command_timeout_seconds: float
     crm_backend: str
     crm_table_name: str
+    interaction_metrics_backend: str
+    interaction_metrics_table_name: str
     redis_master_name: str
     redis_password: str | None
     redis_db: int
@@ -107,6 +111,11 @@ class Settings:
             api_tokens=tokens,
             deploy_env=os.getenv("AUDRAI_DEPLOY_ENV", "local"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
+            log_format=os.getenv(
+                "LOG_FORMAT",
+                "pretty" if os.getenv("AUDRAI_DEPLOY_ENV", "local").strip().lower() == "local" else "json",
+            ),
+            log_colorized=_bool_env("LOG_COLORIZED", True),
             sentry_dsn=os.getenv("SENTRY_DSN"),
             checkpoint_backend=os.getenv("CHECKPOINT_BACKEND", "memory"),
             attachment_backend=os.getenv("ATTACHMENT_BACKEND", "memory"),
@@ -132,6 +141,8 @@ class Settings:
             db_command_timeout_seconds=float(os.getenv("DB_COMMAND_TIMEOUT_SECONDS", "30")),
             crm_backend=os.getenv("CRM_BACKEND", "memory"),
             crm_table_name=os.getenv("CRM_TABLE_NAME", "crm_leads"),
+            interaction_metrics_backend=os.getenv("INTERACTION_METRICS_BACKEND", "auto"),
+            interaction_metrics_table_name=os.getenv("INTERACTION_METRICS_TABLE", "interaction_events"),
             redis_master_name=os.getenv("REDIS_MASTER_NAME", "mymaster"),
             redis_password=os.getenv("REDIS_PASSWORD"),
             redis_db=int(os.getenv("REDIS_DB", "0")),

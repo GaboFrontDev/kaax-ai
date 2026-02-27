@@ -19,6 +19,11 @@ from app.memory.idempotency import InMemoryIdempotencyStore
 from app.memory.langgraph_checkpointer import LangGraphCheckpointerManager
 from app.memory.locks import InMemorySessionLockManager, PostgresSessionLockManager, SessionLockManager
 from app.memory.session_manager import SessionManager
+from app.observability.metrics import (
+    InMemoryMetrics,
+    InteractionMetricsStore,
+    PostgresInteractionMetrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +236,29 @@ def get_crm_provider() -> CRMProvider:
             return PostgresCRMProvider(pool_manager, table_name=settings.crm_table_name)
         logger.warning("crm_postgres_backend_requested_but_unavailable_falling_back_memory")
     return InMemoryCRMProvider()
+
+
+@lru_cache
+def get_interaction_metrics_store() -> InteractionMetricsStore:
+    settings = get_settings()
+    backend = settings.interaction_metrics_backend.strip().lower()
+
+    postgres_pool = get_postgres_pool_manager()
+    crm_pool = get_crm_pool_manager()
+    chosen_pool = postgres_pool or crm_pool
+
+    should_use_postgres = backend == "postgres" or (backend == "auto" and chosen_pool is not None)
+    if should_use_postgres and chosen_pool is not None:
+        return PostgresInteractionMetrics(
+            chosen_pool,
+            table_name=settings.interaction_metrics_table_name,
+            crm_pool_manager=crm_pool or chosen_pool,
+            crm_table_name=settings.crm_table_name,
+        )
+
+    if backend == "postgres":
+        logger.warning("interaction_metrics_postgres_requested_but_unavailable_falling_back_memory")
+    return InMemoryMetrics()
 
 
 @lru_cache

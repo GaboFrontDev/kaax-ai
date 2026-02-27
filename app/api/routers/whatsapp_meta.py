@@ -8,13 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from app.agent.runtime import AgentRuntime
-from app.api.dependencies import get_agent_runtime
+from app.api.dependencies import get_agent_runtime, get_interaction_metrics_store
 from app.channels.whatsapp_meta.adapter import WhatsAppMetaAdapter
 from app.channels.whatsapp_meta.client import send_meta_text_message
 from app.channels.whatsapp_meta.webhook import validate_meta_signature, verify_meta_webhook_token
 from app.infra.settings import Settings, get_settings
 from app.memory.session_manager import SessionBusyError
 from app.observability.logging import set_correlation
+from app.observability.metrics import InteractionMetricsStore
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["whatsapp_meta"])
@@ -98,6 +99,7 @@ async def whatsapp_meta_webhook(
     request: Request,
     runtime: AgentRuntime = Depends(get_agent_runtime),
     settings: Settings = Depends(get_settings),
+    metrics_store: InteractionMetricsStore = Depends(get_interaction_metrics_store),
 ) -> dict[str, object]:
     raw_body = await request.body()
 
@@ -122,8 +124,21 @@ async def whatsapp_meta_webhook(
 
     for inbound in inbound_messages:
         req = await _adapter.normalize_inbound(inbound)
+        user_id = str(inbound.get("from", "")).strip() or None
         inbound_run_id = str(inbound.get("wa_message_id") or "wa-meta-webhook")
+        runtime_run_id = inbound_run_id
         set_correlation(thread_id=req.thread_id, run_id=inbound_run_id)
+        await _record_metrics_event(
+            metrics_store,
+            channel="whatsapp_meta",
+            user_id=user_id,
+            thread_id=req.thread_id,
+            direction="inbound",
+            event_type="message_inbound",
+            success=True,
+            run_id=inbound_run_id,
+            metadata={"to_phone_number_id": str(inbound.get("to", "")).strip()},
+        )
         logger.info(
             "meta_inbound_message thread_id=%s from=%s to=%s text=%s",
             req.thread_id,
@@ -144,17 +159,50 @@ async def whatsapp_meta_webhook(
             )
         except SessionBusyError:
             response_text = "Estoy procesando tu mensaje anterior. Enseguida continuo contigo."
+            await _record_metrics_event(
+                metrics_store,
+                channel="whatsapp_meta",
+                user_id=user_id,
+                thread_id=req.thread_id,
+                direction="outbound",
+                event_type="message_session_busy",
+                success=False,
+                run_id=inbound_run_id,
+                metadata={"reason": "session_busy"},
+            )
         except Exception:
             logger.exception("meta_webhook_runtime_failed")
             response_text = (
                 "Tuvimos un problema temporal procesando tu mensaje. "
                 "Puedes intentar de nuevo en unos segundos."
             )
+            await _record_metrics_event(
+                metrics_store,
+                channel="whatsapp_meta",
+                user_id=user_id,
+                thread_id=req.thread_id,
+                direction="outbound",
+                event_type="message_runtime_error",
+                success=False,
+                run_id=inbound_run_id,
+                metadata={"reason": "runtime_exception"},
+            )
 
         processed += 1
         phone_number_id = inbound.get("to", "").strip()
         to_number = inbound.get("from", "").strip()
         if not (settings.whatsapp_meta_access_token and phone_number_id and to_number):
+            await _record_metrics_event(
+                metrics_store,
+                channel="whatsapp_meta",
+                user_id=user_id,
+                thread_id=req.thread_id,
+                direction="outbound",
+                event_type="message_not_sent",
+                success=False,
+                run_id=inbound_run_id,
+                metadata={"reason": "missing_sender_configuration"},
+            )
             continue
 
         try:
@@ -176,6 +224,17 @@ async def whatsapp_meta_webhook(
                     else None
                 ),
             )
+            await _record_metrics_event(
+                metrics_store,
+                channel="whatsapp_meta",
+                user_id=user_id,
+                thread_id=req.thread_id,
+                direction="outbound",
+                event_type="message_sent",
+                success=True,
+                run_id=runtime_run_id,
+                metadata={"to_number": to_number},
+            )
         except httpx.HTTPStatusError as exc:
             body = exc.response.text if exc.response is not None else ""
             logger.error(
@@ -187,6 +246,20 @@ async def whatsapp_meta_webhook(
                     "meta_to_number": to_number,
                 },
             )
+            await _record_metrics_event(
+                metrics_store,
+                channel="whatsapp_meta",
+                user_id=user_id,
+                thread_id=req.thread_id,
+                direction="outbound",
+                event_type="message_send_error",
+                success=False,
+                run_id=inbound_run_id,
+                metadata={
+                    "status_code": exc.response.status_code if exc.response is not None else None,
+                    "to_number": to_number,
+                },
+            )
         except Exception:
             logger.exception(
                 "meta_send_failed",
@@ -195,7 +268,46 @@ async def whatsapp_meta_webhook(
                     "meta_to_number": to_number,
                 },
             )
+            await _record_metrics_event(
+                metrics_store,
+                channel="whatsapp_meta",
+                user_id=user_id,
+                thread_id=req.thread_id,
+                direction="outbound",
+                event_type="message_send_exception",
+                success=False,
+                run_id=inbound_run_id,
+                metadata={"to_number": to_number},
+            )
         finally:
             set_correlation(None, None)
 
     return {"ok": True, "processed": processed, "sent": sent}
+
+
+async def _record_metrics_event(
+    metrics_store: InteractionMetricsStore,
+    *,
+    channel: str,
+    user_id: str | None,
+    thread_id: str,
+    direction: str,
+    event_type: str,
+    success: bool,
+    run_id: str | None,
+    metadata: dict[str, object] | None,
+) -> None:
+    try:
+        await metrics_store.record_event(
+            channel=channel,
+            user_id=user_id,
+            thread_id=thread_id,
+            direction=direction,
+            event_type=event_type,
+            success=success,
+            run_id=run_id,
+            metadata=metadata,
+        )
+    except Exception:
+        # Metrics should never break message delivery.
+        pass

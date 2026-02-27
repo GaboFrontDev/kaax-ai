@@ -7,7 +7,9 @@ from fastapi import FastAPI
 from app.api.dependencies import (
     get_attachment_store,
     get_checkpoint_store,
+    get_crm_pool_manager,
     get_cleanup_worker,
+    get_interaction_metrics_store,
     get_langgraph_checkpointer_manager,
     get_postgres_pool_manager,
     get_redis_manager,
@@ -26,7 +28,11 @@ from app.observability.sentry import configure_sentry
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(
+        settings.log_level,
+        log_format=settings.log_format,
+        colorized=settings.log_colorized,
+    )
     configure_sentry(settings.sentry_dsn)
 
     checkpoint_store = get_checkpoint_store()
@@ -39,6 +45,9 @@ async def lifespan(_: FastAPI):
     attachment_store = get_attachment_store()
     await attachment_store.setup()
 
+    interaction_metrics_store = get_interaction_metrics_store()
+    await interaction_metrics_store.setup()
+
     cleanup_worker = get_cleanup_worker()
     await cleanup_worker.start()
 
@@ -49,6 +58,9 @@ async def lifespan(_: FastAPI):
         pool_manager = get_postgres_pool_manager()
         if pool_manager is not None:
             await pool_manager.close()
+        crm_pool_manager = get_crm_pool_manager()
+        if crm_pool_manager is not None:
+            await crm_pool_manager.close()
         langgraph_checkpointer_manager = get_langgraph_checkpointer_manager()
         if langgraph_checkpointer_manager is not None:
             await langgraph_checkpointer_manager.close()
