@@ -83,6 +83,11 @@ class Settings:
     aws_region: str
     prompt_name: str
     langchain_summarization_enabled: bool
+    llm_intent_router_enabled: bool
+    llm_intent_router_confidence_threshold: float
+    lead_owner_notify_enabled: bool
+    lead_owner_whatsapp_number: str | None
+    whatsapp_meta_owner_phone_number_id: str | None
     whatsapp_twilio_auth_token: str | None
     whatsapp_twilio_webhook_url: str | None
     whatsapp_meta_verify_token: str | None
@@ -148,6 +153,13 @@ class Settings:
             aws_region=os.getenv("AWS_REGION", "us-east-1"),
             prompt_name=os.getenv("PROMPT_NAME", "agent"),
             langchain_summarization_enabled=_bool_env("LANGCHAIN_SUMMARIZATION_ENABLED", True),
+            llm_intent_router_enabled=_bool_env("LLM_INTENT_ROUTER_ENABLED", True),
+            llm_intent_router_confidence_threshold=float(
+                os.getenv("LLM_INTENT_ROUTER_CONFIDENCE_THRESHOLD", "0.7")
+            ),
+            lead_owner_notify_enabled=_bool_env("LEAD_OWNER_NOTIFY_ENABLED", False),
+            lead_owner_whatsapp_number=os.getenv("LEAD_OWNER_WHATSAPP_NUMBER"),
+            whatsapp_meta_owner_phone_number_id=os.getenv("WHATSAPP_META_OWNER_PHONE_NUMBER_ID"),
             whatsapp_twilio_auth_token=os.getenv("WHATSAPP_TWILIO_AUTH_TOKEN"),
             whatsapp_twilio_webhook_url=os.getenv("WHATSAPP_TWILIO_WEBHOOK_URL"),
             whatsapp_meta_verify_token=os.getenv("WHATSAPP_META_VERIFY_TOKEN"),

@@ -30,6 +30,8 @@ def build_agent(
     model_temperature: float = 0.5,
     prompt_name: str = "default",
     langchain_summarization_enabled: bool = True,
+    llm_intent_router_enabled: bool = True,
+    llm_intent_router_confidence_threshold: float = 0.7,
     checkpointer_manager: Any | None = None,
 ) -> AgentRuntime:
     sanitizer = PromptSanitizerMiddleware()
@@ -47,6 +49,8 @@ def build_agent(
                 temperature=model_temperature,
                 system_prompt=load_prompt(prompt_name),
                 enable_summarization=langchain_summarization_enabled,
+                llm_intent_router_enabled=llm_intent_router_enabled,
+                llm_intent_router_confidence_threshold=llm_intent_router_confidence_threshold,
                 checkpointer_manager=checkpointer_manager,
             )
         except Exception as exc:  # pragma: no cover - optional path

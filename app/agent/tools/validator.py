@@ -73,6 +73,17 @@ class DetectLeadCaptureReadinessInput(BaseModel):
     lead_data: dict[str, object] = Field(default_factory=dict)
 
 
+class CaptureLeadIfReadyInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    business_context: dict[str, object] = Field(default_factory=dict)
+    whatsapp_context: dict[str, object] = Field(default_factory=dict)
+    crm_context: dict[str, object] = Field(default_factory=dict)
+    agent_limits: dict[str, object] = Field(default_factory=dict)
+    lead_data: dict[str, object] = Field(default_factory=dict)
+    notify_owner: bool = False
+
+
 class ErrorOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -167,6 +178,19 @@ class LeadCaptureReadinessOutputSuccess(BaseModel):
     suggested_crm_payload: dict[str, object]
 
 
+class CaptureLeadIfReadyOutputSuccess(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["captured", "missing_fields", "not_qualified"]
+    lead_status: Literal["calificado", "no_calificado", "en_revision"]
+    missing_critical_fields: list[str]
+    qualification_evidence: list[str]
+    crm_result: dict[str, object] | None = None
+    owner_notification: Literal["sent", "skipped", "failed"]
+    owner_notification_error: str | None = None
+    structured_payload: dict[str, object]
+
+
 _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "get_iso_country_code": IsoInput,
     "retrieve_markets": MarketsInput,
@@ -176,6 +200,7 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "update_user_preferences": UpdatePreferencesInput,
     "crm_upsert_quote": CrmUpsertQuoteInput,
     "detect_lead_capture_readiness": DetectLeadCaptureReadinessInput,
+    "capture_lead_if_ready": CaptureLeadIfReadyInput,
 }
 
 _OUTPUT_ADAPTERS: dict[str, TypeAdapter[Any]] = {
@@ -187,6 +212,7 @@ _OUTPUT_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "update_user_preferences": TypeAdapter(UpdatePreferencesOutputSuccess | ErrorOutput),
     "crm_upsert_quote": TypeAdapter(CrmUpsertOutputSuccess | ErrorOutput),
     "detect_lead_capture_readiness": TypeAdapter(LeadCaptureReadinessOutputSuccess | ErrorOutput),
+    "capture_lead_if_ready": TypeAdapter(CaptureLeadIfReadyOutputSuccess | ErrorOutput),
 }
 
 

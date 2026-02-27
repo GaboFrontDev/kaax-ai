@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.agent.tools.validator import ToolValidationError, validate_tool_input, validate_tool_output
+from app.channels.whatsapp_meta.client import send_meta_text_message
 
 
 @dataclass(slots=True)
@@ -14,18 +15,28 @@ class ToolExecutionResult:
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        owner_notify_enabled: bool = False,
+        owner_whatsapp_number: str | None = None,
+        owner_phone_number_id: str | None = None,
+        whatsapp_meta_access_token: str | None = None,
+        whatsapp_meta_api_version: str = "v21.0",
+    ) -> None:
         self._user_preferences: dict[str, dict[str, str]] = {}
+        self._owner_notify_enabled = owner_notify_enabled
+        self._owner_whatsapp_number = owner_whatsapp_number
+        self._owner_phone_number_id = owner_phone_number_id
+        self._whatsapp_meta_access_token = whatsapp_meta_access_token
+        self._whatsapp_meta_api_version = whatsapp_meta_api_version
 
     @property
     def allowed_tools(self) -> tuple[str, ...]:
         return (
-            "get_iso_country_code",
-            "retrieve_markets",
-            "retrieve_segments",
-            "update_user_preferences",
             "crm_upsert_quote",
             "detect_lead_capture_readiness",
+            "capture_lead_if_ready",
         )
 
     async def execute(self, tool_name: str, payload: dict[str, Any]) -> ToolExecutionResult:
@@ -36,18 +47,12 @@ class ToolRegistry:
             return ToolExecutionResult(tool=tool_name, input={}, output=output)
 
         try:
-            if tool_name == "get_iso_country_code":
-                output = self._get_iso_country_code(validated)
-            elif tool_name == "retrieve_markets":
-                output = self._retrieve_markets(validated)
-            elif tool_name == "retrieve_segments":
-                output = self._retrieve_segments(validated)
-            elif tool_name == "update_user_preferences":
-                output = self._update_user_preferences(validated)
-            elif tool_name == "crm_upsert_quote":
+            if tool_name == "crm_upsert_quote":
                 output = self._crm_upsert_quote(validated)
             elif tool_name == "detect_lead_capture_readiness":
                 output = self._detect_lead_capture_readiness(validated)
+            elif tool_name == "capture_lead_if_ready":
+                output = await self._capture_lead_if_ready(validated)
             else:
                 raise ToolValidationError(f"unsupported tool {tool_name}")
         except Exception as exc:
@@ -55,53 +60,6 @@ class ToolRegistry:
 
         normalized_output = validate_tool_output(tool_name, output)
         return ToolExecutionResult(tool=tool_name, input=validated, output=normalized_output)
-
-    def _get_iso_country_code(self, payload: dict[str, Any]) -> dict[str, Any]:
-        mapping = {
-            "argentina": "AR",
-            "chile": "CL",
-            "mexico": "MX",
-            "united states": "US",
-            "usa": "US",
-            "spain": "ES",
-            "colombia": "CO",
-            "peru": "PE",
-        }
-        normalized = str(payload["country_name"]).strip().lower()
-        iso_code = mapping.get(normalized)
-        if not iso_code:
-            return {"error": f"country not found: {payload['country_name']}"}
-        return {"iso_code": iso_code}
-
-    def _retrieve_markets(self, payload: dict[str, Any]) -> dict[str, Any]:
-        query = str(payload["query"]).lower()
-        country_code = payload.get("country_code", "US")
-        limit = int(payload.get("limit", 10))
-        sample = [
-            {"name": "Retail", "country_code": country_code, "score": 0.92},
-            {"name": "CPG", "country_code": country_code, "score": 0.84},
-            {"name": "Fintech", "country_code": country_code, "score": 0.81},
-            {"name": "Healthcare", "country_code": country_code, "score": 0.78},
-        ]
-        filtered = [item for item in sample if query in item["name"].lower() or len(query) < 4]
-        return {"markets": (filtered or sample)[:limit]}
-
-    def _retrieve_segments(self, payload: dict[str, Any]) -> dict[str, Any]:
-        query = str(payload["query"]).lower()
-        limit = int(payload.get("limit", 10))
-        segments = [
-            {"id": "seg-1", "name": "Young Adults", "score": 0.91},
-            {"id": "seg-2", "name": "Families", "score": 0.86},
-            {"id": "seg-3", "name": "Professionals", "score": 0.82},
-        ]
-        selected = [s for s in segments if query in s["name"].lower() or len(query) < 4]
-        return {"segments": (selected or segments)[:limit]}
-
-    def _update_user_preferences(self, payload: dict[str, Any]) -> dict[str, Any]:
-        email = str(payload["email"]).lower()
-        prefs = {str(k): str(v) for k, v in dict(payload["preferences"]).items()}
-        self._user_preferences[email] = prefs
-        return {"status": "persisted", "email": email, "preferences": prefs}
 
     def _crm_upsert_quote(self, payload: dict[str, Any]) -> dict[str, Any]:
         quote = dict(payload["payload"])
@@ -214,6 +172,96 @@ class ToolRegistry:
             "next_action": next_action,
             "suggested_crm_payload": suggested_crm_payload,
         }
+
+    async def _capture_lead_if_ready(self, payload: dict[str, Any]) -> dict[str, Any]:
+        readiness = self._detect_lead_capture_readiness(payload)
+        lead_status = str(readiness["lead_status"])
+        missing_critical_fields = list(readiness["missing_critical_fields"])
+        qualification_evidence = list(readiness["qualification_evidence"])
+        structured_payload = dict(readiness["suggested_crm_payload"])
+
+        if lead_status == "no_calificado":
+            return {
+                "status": "not_qualified",
+                "lead_status": lead_status,
+                "missing_critical_fields": missing_critical_fields,
+                "qualification_evidence": qualification_evidence,
+                "crm_result": None,
+                "owner_notification": "skipped",
+                "owner_notification_error": None,
+                "structured_payload": structured_payload,
+            }
+
+        if missing_critical_fields:
+            return {
+                "status": "missing_fields",
+                "lead_status": lead_status,
+                "missing_critical_fields": missing_critical_fields,
+                "qualification_evidence": qualification_evidence,
+                "crm_result": None,
+                "owner_notification": "skipped",
+                "owner_notification_error": None,
+                "structured_payload": structured_payload,
+            }
+
+        crm_result = self._crm_upsert_quote({"payload": structured_payload})
+        owner_notification = "skipped"
+        owner_notification_error: str | None = None
+
+        should_notify_owner = bool(payload.get("notify_owner"))
+        if should_notify_owner:
+            owner_notification, owner_notification_error = await self._notify_owner_about_captured_lead(
+                structured_payload=structured_payload,
+            )
+
+        return {
+            "status": "captured",
+            "lead_status": lead_status,
+            "missing_critical_fields": [],
+            "qualification_evidence": qualification_evidence,
+            "crm_result": crm_result,
+            "owner_notification": owner_notification,
+            "owner_notification_error": owner_notification_error,
+            "structured_payload": structured_payload,
+        }
+
+    async def _notify_owner_about_captured_lead(
+        self,
+        *,
+        structured_payload: dict[str, object],
+    ) -> tuple[str, str | None]:
+        if not self._owner_notify_enabled:
+            return "skipped", "owner notifications are disabled"
+
+        if not (
+            self._owner_whatsapp_number
+            and self._owner_phone_number_id
+            and self._whatsapp_meta_access_token
+        ):
+            return "skipped", "owner WhatsApp configuration is incomplete"
+
+        lead_status = str(structured_payload.get("lead_status", "unknown"))
+        next_action = str(structured_payload.get("next_action", "unknown"))
+        evidence = structured_payload.get("qualification_evidence", [])
+        evidence_text = ", ".join(str(item) for item in evidence[:4]) if isinstance(evidence, list) else str(evidence)
+        message = (
+            "Nuevo lead capturado por kaax.\n"
+            f"Estado: {lead_status}\n"
+            f"Siguiente accion: {next_action}\n"
+            f"Evidencia: {evidence_text or 'N/A'}"
+        )
+
+        try:
+            await send_meta_text_message(
+                api_version=self._whatsapp_meta_api_version,
+                phone_number_id=self._owner_phone_number_id,
+                access_token=self._whatsapp_meta_access_token,
+                to=self._owner_whatsapp_number,
+                text=message,
+            )
+            return "sent", None
+        except Exception as exc:
+            return "failed", f"{type(exc).__name__}: {exc}"
 
     @staticmethod
     def _as_dict(value: Any) -> dict[str, Any]:

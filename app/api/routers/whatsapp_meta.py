@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
@@ -147,6 +148,17 @@ async def whatsapp_meta_webhook(
                 text=response_text,
             )
             sent += 1
+        except httpx.HTTPStatusError as exc:
+            body = exc.response.text if exc.response is not None else ""
+            logger.error(
+                "meta_send_failed_http_status=%s body=%s",
+                exc.response.status_code if exc.response is not None else "unknown",
+                body,
+                extra={
+                    "meta_phone_number_id": phone_number_id,
+                    "meta_to_number": to_number,
+                },
+            )
         except Exception:
             logger.exception(
                 "meta_send_failed",

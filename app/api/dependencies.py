@@ -175,7 +175,14 @@ def get_session_manager() -> SessionManager:
 
 @lru_cache
 def get_tool_registry() -> ToolRegistry:
-    return ToolRegistry()
+    settings = get_settings()
+    return ToolRegistry(
+        owner_notify_enabled=settings.lead_owner_notify_enabled,
+        owner_whatsapp_number=settings.lead_owner_whatsapp_number,
+        owner_phone_number_id=settings.whatsapp_meta_owner_phone_number_id,
+        whatsapp_meta_access_token=settings.whatsapp_meta_access_token,
+        whatsapp_meta_api_version=settings.whatsapp_meta_api_version,
+    )
 
 
 @lru_cache
@@ -222,6 +229,8 @@ def get_agent_runtime() -> AgentRuntime:
         model_temperature=settings.model_temperature,
         prompt_name=settings.prompt_name,
         langchain_summarization_enabled=settings.langchain_summarization_enabled,
+        llm_intent_router_enabled=settings.llm_intent_router_enabled,
+        llm_intent_router_confidence_threshold=settings.llm_intent_router_confidence_threshold,
         checkpointer_manager=get_langgraph_checkpointer_manager(),
     )
 

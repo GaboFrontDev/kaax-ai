@@ -10,7 +10,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent.intent_router import IntentDecision, build_routing_response
+from app.agent.intent_router_llm import LLMIntentRouter, IntentRoutingStructuredOutput
 from app.agent.middleware.prompt_sanitizer import PromptSanitizerMiddleware
+from app.agent.prompt_loader import load_prompt
 from app.agent.runtime import AssistRequest, StreamingEvent, _content_to_text
 from app.agent.tools.registry import ToolRegistry
 from app.memory.attachments_store import AttachmentStore
@@ -33,6 +36,17 @@ class DetectLeadCaptureReadinessArgs(BaseModel):
     crm_context: dict[str, Any] = Field(default_factory=dict)
     agent_limits: dict[str, Any] = Field(default_factory=dict)
     lead_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class CaptureLeadIfReadyArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    business_context: dict[str, Any] = Field(default_factory=dict)
+    whatsapp_context: dict[str, Any] = Field(default_factory=dict)
+    crm_context: dict[str, Any] = Field(default_factory=dict)
+    agent_limits: dict[str, Any] = Field(default_factory=dict)
+    lead_data: dict[str, Any] = Field(default_factory=dict)
+    notify_owner: bool = False
 
 
 def _strip_thinking_tags(text: str) -> str:
@@ -193,9 +207,42 @@ def build_langchain_tools(tool_registry: ToolRegistry) -> list[Any]:
         coroutine=_detect_lead_capture_readiness,
     )
 
+    async def _capture_lead_if_ready(
+        business_context: dict[str, Any] | None = None,
+        whatsapp_context: dict[str, Any] | None = None,
+        crm_context: dict[str, Any] | None = None,
+        agent_limits: dict[str, Any] | None = None,
+        lead_data: dict[str, Any] | None = None,
+        notify_owner: bool = False,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"notify_owner": bool(notify_owner)}
+        if business_context is not None:
+            payload["business_context"] = business_context
+        if whatsapp_context is not None:
+            payload["whatsapp_context"] = whatsapp_context
+        if crm_context is not None:
+            payload["crm_context"] = crm_context
+        if agent_limits is not None:
+            payload["agent_limits"] = agent_limits
+        if lead_data is not None:
+            payload["lead_data"] = lead_data
+
+        return (await tool_registry.execute("capture_lead_if_ready", payload)).output
+
+    capture_lead_if_ready = StructuredTool.from_function(
+        name="capture_lead_if_ready",
+        description=(
+            "Validate lead readiness, capture in CRM when all required fields are present, "
+            "and optionally notify owner by WhatsApp."
+        ),
+        args_schema=CaptureLeadIfReadyArgs,
+        coroutine=_capture_lead_if_ready,
+    )
+
     return [
         crm_upsert_quote,
         detect_lead_capture_readiness,
+        capture_lead_if_ready,
     ]
 
 
@@ -213,6 +260,8 @@ class LangChainAgentRuntime:
         temperature: float,
         system_prompt: str,
         enable_summarization: bool,
+        llm_intent_router_enabled: bool,
+        llm_intent_router_confidence_threshold: float,
         checkpointer_manager: LangGraphCheckpointerManager | None,
     ) -> None:
         self._session_manager = session_manager
@@ -227,9 +276,13 @@ class LangChainAgentRuntime:
         self._temperature = temperature
         self._system_prompt = system_prompt
         self._enable_summarization = enable_summarization
+        self._llm_intent_router_enabled = llm_intent_router_enabled
+        self._llm_intent_router_confidence_threshold = llm_intent_router_confidence_threshold
 
         self._graph: Any | None = None
         self._graph_lock = asyncio.Lock()
+        self._llm_intent_router: LLMIntentRouter | None = None
+        self._llm_intent_router_init_failed = False
 
     async def _get_graph(self) -> Any:
         if self._graph is not None:
@@ -297,8 +350,21 @@ class LangChainAgentRuntime:
                 if req.attachments:
                     await self._attachment_store.put(req.thread_id, req.attachments)
 
-                graph = await self._get_graph()
                 user_text = self._sanitizer.sanitize(req.user_text)
+                routing = await self._route_intent(user_text)
+                if routing.route != "in_scope":
+                    answer = build_routing_response(routing)
+                    attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
+                    return {
+                        "response": answer,
+                        "tools_used": [],
+                        "completion_time": round(time.perf_counter() - started_at, 3),
+                        "conversation_id": req.thread_id,
+                        "run_id": run_id,
+                        "attachments": attachments,
+                    }
+
+                graph = await self._get_graph()
 
                 result = await graph.ainvoke(
                     {"messages": [{"role": "user", "content": user_text}]},
@@ -330,8 +396,31 @@ class LangChainAgentRuntime:
                 if req.attachments:
                     await self._attachment_store.put(req.thread_id, req.attachments)
 
-                graph = await self._get_graph()
                 user_text = self._sanitizer.sanitize(req.user_text)
+                routing = await self._route_intent(user_text)
+
+                if routing.route != "in_scope":
+                    answer = build_routing_response(routing)
+                    for chunk in self._chunk_text(answer):
+                        yield StreamingEvent(
+                            type="content",
+                            content=chunk,
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+                    attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
+                    yield StreamingEvent(
+                        type="complete",
+                        payload={
+                            "tools_used": [],
+                            "attachments": attachments,
+                        },
+                        thread_id=req.thread_id,
+                        run_id=run_id,
+                    )
+                    return
+
+                graph = await self._get_graph()
 
                 chunks: list[str] = []
                 tools_used: list[str] = []
@@ -414,6 +503,50 @@ class LangChainAgentRuntime:
             )
         finally:
             set_correlation(None, None)
+
+    async def _route_intent(self, user_text: str) -> IntentDecision:
+        if not self._llm_intent_router_enabled:
+            return IntentDecision(route="in_scope", confidence=1.0, reason="intent_router_disabled")
+
+        router = await self._get_llm_intent_router()
+        if router is None:
+            return IntentDecision(route="in_scope", confidence=0.0, reason="intent_router_unavailable")
+
+        decision = await router.route(user_text)
+        if decision.reason == "llm_router_failed":
+            return IntentDecision(route="in_scope", confidence=0.0, reason="intent_router_failed_open")
+        return decision
+
+    async def _get_llm_intent_router(self) -> LLMIntentRouter | None:
+        if self._llm_intent_router is not None:
+            return self._llm_intent_router
+        if self._llm_intent_router_init_failed:
+            return None
+
+        try:
+            from langchain_aws import ChatBedrockConverse
+
+            model = ChatBedrockConverse(
+                model_id=self._small_model_name,
+                region_name=self._aws_region,
+                temperature=0,
+                disable_streaming=True,
+            )
+            structured_model = model.with_structured_output(IntentRoutingStructuredOutput)
+            self._llm_intent_router = LLMIntentRouter(
+                model=structured_model,
+                system_prompt=load_prompt("intent_router"),
+                confidence_threshold=self._llm_intent_router_confidence_threshold,
+            )
+            return self._llm_intent_router
+        except Exception as exc:  # pragma: no cover - fallback safety
+            self._llm_intent_router_init_failed = True
+            logger.warning("llm_intent_router_unavailable_fallback_keywords: %s", exc)
+            return None
+
+    @staticmethod
+    def _chunk_text(text: str, chunk_size: int = 80) -> list[str]:
+        return [text[index : index + chunk_size] for index in range(0, len(text), chunk_size)] or [""]
 
     @staticmethod
     def _extract_tools_used(result: Any) -> list[str]:

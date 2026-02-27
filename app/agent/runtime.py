@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent.intent_router import build_routing_response, route_intent
 from app.agent.middleware.prompt_sanitizer import PromptSanitizerMiddleware
 from app.agent.middleware.summarization import SummarizationMiddleware
 from app.agent.tools.registry import ToolExecutionResult, ToolRegistry
@@ -117,6 +118,23 @@ class DefaultAgentRuntime:
 
                 user_text = self._sanitizer.sanitize(req.user_text)
                 state["messages"].append({"role": "user", "content": user_text})
+                routing = route_intent(user_text)
+
+                if routing.route != "in_scope":
+                    answer = build_routing_response(routing)
+                    state["messages"].append({"role": "assistant", "content": answer})
+                    state["pending_tool_calls"] = []
+                    await self._summarizer.maybe_summarize(state)
+                    await self._session_manager.put_state(req.thread_id, state)
+                    attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
+                    return {
+                        "response": answer,
+                        "tools_used": [],
+                        "completion_time": round(time.perf_counter() - started_at, 3),
+                        "conversation_id": req.thread_id,
+                        "run_id": run_id,
+                        "attachments": attachments,
+                    }
 
                 tool_results = await self._run_selected_tools(user_text)
                 answer = self._compose_answer(user_text, tool_results)
@@ -153,6 +171,33 @@ class DefaultAgentRuntime:
 
                 user_text = self._sanitizer.sanitize(req.user_text)
                 state["messages"].append({"role": "user", "content": user_text})
+                routing = route_intent(user_text)
+
+                if routing.route != "in_scope":
+                    answer = build_routing_response(routing)
+                    state["messages"].append({"role": "assistant", "content": answer})
+                    state["pending_tool_calls"] = []
+                    for chunk in self._chunk_text(answer):
+                        yield StreamingEvent(
+                            type="content",
+                            content=chunk,
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+
+                    await self._summarizer.maybe_summarize(state)
+                    await self._session_manager.put_state(req.thread_id, state)
+                    attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
+                    yield StreamingEvent(
+                        type="complete",
+                        payload={
+                            "tools_used": [],
+                            "attachments": attachments,
+                        },
+                        thread_id=req.thread_id,
+                        run_id=run_id,
+                    )
+                    return
 
                 tool_plan = self._select_tools(user_text)
                 tool_results: list[ToolExecutionResult] = []
