@@ -63,6 +63,16 @@ class CrmUpsertQuoteInput(BaseModel):
     payload: dict[str, object]
 
 
+class DetectLeadCaptureReadinessInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    business_context: dict[str, object] = Field(default_factory=dict)
+    whatsapp_context: dict[str, object] = Field(default_factory=dict)
+    crm_context: dict[str, object] = Field(default_factory=dict)
+    agent_limits: dict[str, object] = Field(default_factory=dict)
+    lead_data: dict[str, object] = Field(default_factory=dict)
+
+
 class ErrorOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -146,6 +156,17 @@ class CrmUpsertOutputSuccess(BaseModel):
     status: Literal["upserted"]
 
 
+class LeadCaptureReadinessOutputSuccess(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ready_for_capture: bool
+    lead_status: Literal["calificado", "no_calificado", "en_revision"]
+    qualification_evidence: list[str]
+    missing_critical_fields: list[str]
+    next_action: Literal["registro_crm", "solicitar_datos_faltantes", "handoff_humano", "cierre_cordial"]
+    suggested_crm_payload: dict[str, object]
+
+
 _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "get_iso_country_code": IsoInput,
     "retrieve_markets": MarketsInput,
@@ -154,6 +175,7 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "find_units": FindUnitsInput,
     "update_user_preferences": UpdatePreferencesInput,
     "crm_upsert_quote": CrmUpsertQuoteInput,
+    "detect_lead_capture_readiness": DetectLeadCaptureReadinessInput,
 }
 
 _OUTPUT_ADAPTERS: dict[str, TypeAdapter[Any]] = {
@@ -164,6 +186,7 @@ _OUTPUT_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "find_units": TypeAdapter(FindUnitsOutputSuccess | ErrorOutput),
     "update_user_preferences": TypeAdapter(UpdatePreferencesOutputSuccess | ErrorOutput),
     "crm_upsert_quote": TypeAdapter(CrmUpsertOutputSuccess | ErrorOutput),
+    "detect_lead_capture_readiness": TypeAdapter(LeadCaptureReadinessOutputSuccess | ErrorOutput),
 }
 
 

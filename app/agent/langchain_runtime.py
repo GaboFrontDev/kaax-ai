@@ -8,6 +8,8 @@ import time
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from app.agent.middleware.prompt_sanitizer import PromptSanitizerMiddleware
 from app.agent.runtime import AssistRequest, StreamingEvent, _content_to_text
 from app.agent.tools.registry import ToolRegistry
@@ -21,6 +23,16 @@ logger = logging.getLogger(__name__)
 
 _THINKING_BLOCK_RE = re.compile(r"(?is)<thinking\b[^>]*>.*?</thinking\s*>")
 _THINKING_TAG_RE = re.compile(r"(?is)</?thinking\b[^>]*>")
+
+
+class DetectLeadCaptureReadinessArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    business_context: dict[str, Any] = Field(default_factory=dict)
+    whatsapp_context: dict[str, Any] = Field(default_factory=dict)
+    crm_context: dict[str, Any] = Field(default_factory=dict)
+    agent_limits: dict[str, Any] = Field(default_factory=dict)
+    lead_data: dict[str, Any] = Field(default_factory=dict)
 
 
 def _strip_thinking_tags(text: str) -> str:
@@ -143,90 +155,7 @@ def _extract_response_text(result: Any) -> str:
 
 
 def build_langchain_tools(tool_registry: ToolRegistry) -> list[Any]:
-    from langchain_core.tools import tool
-
-    @tool
-    async def get_iso_country_code(country_name: str) -> dict[str, Any]:
-        """Return ISO alpha-2 country code for a country name."""
-
-        return (await tool_registry.execute("get_iso_country_code", {"country_name": country_name})).output
-
-    @tool
-    async def retrieve_markets(query: str, country_code: str | None = None, limit: int = 10) -> dict[str, Any]:
-        """Retrieve candidate markets for a query and optional country code."""
-
-        payload: dict[str, Any] = {"query": query, "limit": limit}
-        if country_code:
-            payload["country_code"] = country_code
-        return (await tool_registry.execute("retrieve_markets", payload)).output
-
-    @tool
-    async def retrieve_segments(
-        query: str,
-        country_code: str | None = None,
-        taxonomy: str = "default",
-        limit: int = 10,
-    ) -> dict[str, Any]:
-        """Retrieve audience segments for a query."""
-
-        payload: dict[str, Any] = {
-            "query": query,
-            "taxonomy": taxonomy,
-            "limit": limit,
-        }
-        if country_code:
-            payload["country_code"] = country_code
-        return (await tool_registry.execute("retrieve_segments", payload)).output
-
-    @tool
-    async def retrieve_formats(
-        market_name: str,
-        format_query: str,
-        country_code: str | None = None,
-        limit: int = 10,
-    ) -> dict[str, Any]:
-        """Retrieve available media formats for a market."""
-
-        payload: dict[str, Any] = {
-            "market_name": market_name,
-            "format_query": format_query,
-            "limit": limit,
-        }
-        if country_code:
-            payload["country_code"] = country_code
-        return (await tool_registry.execute("retrieve_formats", payload)).output
-
-    @tool
-    async def find_units(
-        segment_ids: list[str],
-        markets: list[str],
-        media_formats: list[str] | None = None,
-        limit: int = 10,
-    ) -> dict[str, Any]:
-        """Find ranked inventory units for selected segments and markets."""
-
-        payload: dict[str, Any] = {
-            "segment_ids": segment_ids,
-            "markets": markets,
-            "limit": limit,
-        }
-        if media_formats is not None:
-            payload["media_formats"] = media_formats
-        return (await tool_registry.execute("find_units", payload)).output
-
-    @tool
-    async def update_user_preferences(email: str, preferences: dict[str, str]) -> dict[str, Any]:
-        """Persist user preferences by email."""
-
-        return (
-            await tool_registry.execute(
-                "update_user_preferences",
-                {
-                    "email": email,
-                    "preferences": preferences,
-                },
-            )
-        ).output
+    from langchain_core.tools import StructuredTool, tool
 
     @tool
     async def crm_upsert_quote(payload: dict[str, Any]) -> dict[str, Any]:
@@ -234,14 +163,39 @@ def build_langchain_tools(tool_registry: ToolRegistry) -> list[Any]:
 
         return (await tool_registry.execute("crm_upsert_quote", {"payload": payload})).output
 
+    async def _detect_lead_capture_readiness(
+        business_context: dict[str, Any] | None = None,
+        whatsapp_context: dict[str, Any] | None = None,
+        crm_context: dict[str, Any] | None = None,
+        agent_limits: dict[str, Any] | None = None,
+        lead_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Detect if a lead has enough context and evidence to be captured in CRM."""
+
+        payload: dict[str, Any] = {}
+        if business_context is not None:
+            payload["business_context"] = business_context
+        if whatsapp_context is not None:
+            payload["whatsapp_context"] = whatsapp_context
+        if crm_context is not None:
+            payload["crm_context"] = crm_context
+        if agent_limits is not None:
+            payload["agent_limits"] = agent_limits
+        if lead_data is not None:
+            payload["lead_data"] = lead_data
+
+        return (await tool_registry.execute("detect_lead_capture_readiness", payload)).output
+
+    detect_lead_capture_readiness = StructuredTool.from_function(
+        name="detect_lead_capture_readiness",
+        description="Detect if a lead has enough context and evidence to be captured in CRM.",
+        args_schema=DetectLeadCaptureReadinessArgs,
+        coroutine=_detect_lead_capture_readiness,
+    )
+
     return [
-        get_iso_country_code,
-        retrieve_markets,
-        retrieve_segments,
-        retrieve_formats,
-        find_units,
-        update_user_preferences,
         crm_upsert_quote,
+        detect_lead_capture_readiness,
     ]
 
 
