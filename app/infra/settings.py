@@ -68,6 +68,8 @@ class Settings:
     db_pool_min_size: int
     db_pool_max_size: int
     db_command_timeout_seconds: float
+    crm_backend: str
+    crm_table_name: str
     redis_master_name: str
     redis_password: str | None
     redis_db: int
@@ -128,6 +130,8 @@ class Settings:
             db_pool_min_size=int(os.getenv("DB_POOL_MIN_SIZE", "1")),
             db_pool_max_size=int(os.getenv("DB_POOL_MAX_SIZE", "10")),
             db_command_timeout_seconds=float(os.getenv("DB_COMMAND_TIMEOUT_SECONDS", "30")),
+            crm_backend=os.getenv("CRM_BACKEND", "memory"),
+            crm_table_name=os.getenv("CRM_TABLE_NAME", "crm_leads"),
             redis_master_name=os.getenv("REDIS_MASTER_NAME", "mymaster"),
             redis_password=os.getenv("REDIS_PASSWORD"),
             redis_db=int(os.getenv("REDIS_DB", "0")),

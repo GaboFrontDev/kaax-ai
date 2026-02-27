@@ -160,3 +160,26 @@ def test_capture_lead_if_ready_returns_missing_fields_without_capture() -> None:
     assert result.output["lead_status"] == "en_revision"
     assert "crm_result" not in result.output
     assert "lead_data.email" in result.output["missing_critical_fields"]
+
+
+def test_detect_lead_capture_readiness_with_minimal_conversational_payload() -> None:
+    registry = ToolRegistry()
+
+    result = asyncio.run(
+        registry.execute(
+            "detect_lead_capture_readiness",
+            {
+                "crm_context": {"required_fields": ["email", "company", "timeline"]},
+                "lead_data": {
+                    "email": "ventas@acme.com",
+                    "company": "Acme",
+                    "timeline": "este trimestre",
+                    "need": "automatizar calificacion por WhatsApp",
+                    "buying_intent": "alta",
+                },
+            },
+        )
+    )
+
+    assert result.output["ready_for_capture"] is True
+    assert result.output["lead_status"] == "calificado"

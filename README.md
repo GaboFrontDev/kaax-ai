@@ -23,6 +23,17 @@ export DB_PASSWORD=postgres
 export DB_NAME=postgres
 ```
 
+Para persistencia CRM (leads/captura) en PostgreSQL/Supabase:
+
+```bash
+pip install -e .[dev,postgres,migrations]
+export CRM_BACKEND=postgres
+export CRM_TABLE_NAME=crm_leads
+
+# opcion recomendada: DSN unico (Supabase pooler o Postgres directo)
+export DB_DSN='postgresql://<user>:<pass>@<host>:<port>/<db>?sslmode=require'
+```
+
 Para backend de adjuntos/colas en Redis Sentinel:
 
 ```bash
@@ -117,6 +128,15 @@ make docker-test-postgres
 make docker-test-redis
 make docker-down
 ```
+
+## Migraciones Alembic
+
+```bash
+make db-current
+make db-upgrade
+```
+
+La primera migracion crea `crm_leads` para persistir capturas calificadas.
 
 ## Flujo recomendado local (Bedrock + Chainlit)
 

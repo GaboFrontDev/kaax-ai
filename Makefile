@@ -1,6 +1,7 @@
 PYTHON ?= python3
 
 .PHONY: run-api run-api-bedrock run-chainlit unit-tests integration-tests test \
+	db-upgrade db-downgrade db-current \
 	docker-up docker-down docker-logs docker-test-postgres \
 	docker-up-redis docker-test-redis
 
@@ -8,7 +9,7 @@ run-api:
 	source ./.env.local && uv run uvicorn app.api.main:app --host 0.0.0.0 --port 8200 --reload
 
 run-api-bedrock:
-	source ./.env.local && uv run --extra dev --extra bedrock uvicorn app.api.main:app --host 0.0.0.0 --port 8200 --reload
+	source ./.env.local && uv run --extra dev --extra bedrock --extra postgres uvicorn app.api.main:app --host 0.0.0.0 --port 8200 --reload
 
 run-chainlit:
 	source ./.env.local && uv run --extra dev --extra chainlit chainlit run app/channels/chainlit/app.py -w --port 8300
@@ -21,6 +22,15 @@ integration-tests:
 
 test:
 	uv run --extra dev pytest
+
+db-upgrade:
+	source ./.env.local && uv run --extra migrations alembic upgrade head
+
+db-downgrade:
+	source ./.env.local && uv run --extra migrations alembic downgrade -1
+
+db-current:
+	source ./.env.local && uv run --extra migrations alembic current
 
 docker-up:
 	docker compose up -d postgres

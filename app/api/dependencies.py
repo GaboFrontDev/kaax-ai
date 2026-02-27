@@ -8,6 +8,7 @@ from app.agent.runtime import AgentRuntime
 from app.agent.tools.registry import ToolRegistry
 from app.channels.slack.dlq import SlackDeadLetterQueue
 from app.channels.slack.queue import InMemorySlackMessageQueue, RedisSlackMessageQueue, SlackMessageQueue
+from app.crm.providers import CRMProvider, InMemoryCRMProvider, PostgresCRMProvider
 from app.infra.db import DatabaseConfig, PostgresPoolManager, build_postgres_dsn
 from app.infra.redis import RedisSentinelConfig, RedisSentinelManager, parse_sentinel_nodes
 from app.infra.settings import Settings, get_settings
@@ -46,6 +47,41 @@ def get_postgres_pool_manager() -> PostgresPoolManager | None:
         )
     except Exception:
         logger.exception("postgres_dsn_build_failed_falling_back_memory")
+        return None
+
+    config = DatabaseConfig(
+        dsn=dsn,
+        min_pool_size=settings.db_pool_min_size,
+        max_pool_size=settings.db_pool_max_size,
+        command_timeout_seconds=settings.db_command_timeout_seconds,
+    )
+    return PostgresPoolManager(config)
+
+
+@lru_cache
+def get_crm_pool_manager() -> PostgresPoolManager | None:
+    settings = get_settings()
+    if settings.crm_backend.lower() != "postgres":
+        return None
+
+    try:
+        import asyncpg  # noqa: F401
+    except ImportError:
+        logger.warning("asyncpg_not_installed_for_crm_backend_falling_back_memory")
+        return None
+
+    try:
+        dsn = build_postgres_dsn(
+            db_dsn=settings.db_dsn,
+            user=settings.db_user,
+            password=settings.db_password,
+            host=settings.db_host,
+            port=settings.db_port,
+            db_name=settings.db_name,
+            ssl_mode=settings.db_ssl_mode,
+        )
+    except Exception:
+        logger.exception("crm_postgres_dsn_build_failed_falling_back_memory")
         return None
 
     config = DatabaseConfig(
@@ -177,12 +213,24 @@ def get_session_manager() -> SessionManager:
 def get_tool_registry() -> ToolRegistry:
     settings = get_settings()
     return ToolRegistry(
+        crm_provider=get_crm_provider(),
         owner_notify_enabled=settings.lead_owner_notify_enabled,
         owner_whatsapp_number=settings.lead_owner_whatsapp_number,
         owner_phone_number_id=settings.whatsapp_meta_owner_phone_number_id,
         whatsapp_meta_access_token=settings.whatsapp_meta_access_token,
         whatsapp_meta_api_version=settings.whatsapp_meta_api_version,
     )
+
+
+@lru_cache
+def get_crm_provider() -> CRMProvider:
+    settings = get_settings()
+    if settings.crm_backend.lower() == "postgres":
+        pool_manager = get_crm_pool_manager()
+        if pool_manager is not None:
+            return PostgresCRMProvider(pool_manager, table_name=settings.crm_table_name)
+        logger.warning("crm_postgres_backend_requested_but_unavailable_falling_back_memory")
+    return InMemoryCRMProvider()
 
 
 @lru_cache

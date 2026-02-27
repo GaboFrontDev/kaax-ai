@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from app.agent.tools.validator import ToolValidationError, validate_tool_input, validate_tool_output
 from app.channels.whatsapp_meta.client import send_meta_text_message
+from app.crm.providers import CRMProvider, InMemoryCRMProvider
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -17,6 +21,7 @@ class ToolExecutionResult:
 class ToolRegistry:
     def __init__(
         self,
+        crm_provider: CRMProvider | None = None,
         *,
         owner_notify_enabled: bool = False,
         owner_whatsapp_number: str | None = None,
@@ -25,6 +30,7 @@ class ToolRegistry:
         whatsapp_meta_api_version: str = "v21.0",
     ) -> None:
         self._user_preferences: dict[str, dict[str, str]] = {}
+        self._crm_provider: CRMProvider = crm_provider or InMemoryCRMProvider()
         self._owner_notify_enabled = owner_notify_enabled
         self._owner_whatsapp_number = owner_whatsapp_number
         self._owner_phone_number_id = owner_phone_number_id
@@ -40,15 +46,17 @@ class ToolRegistry:
         )
 
     async def execute(self, tool_name: str, payload: dict[str, Any]) -> ToolExecutionResult:
+        logger.info("tool_execute_start tool=%s", tool_name)
         try:
             validated = validate_tool_input(tool_name, payload)
         except ToolValidationError as exc:
             output = validate_tool_output(tool_name, {"error": str(exc)})
+            logger.warning("tool_execute_validation_error tool=%s error=%s", tool_name, str(exc))
             return ToolExecutionResult(tool=tool_name, input={}, output=output)
 
         try:
             if tool_name == "crm_upsert_quote":
-                output = self._crm_upsert_quote(validated)
+                output = await self._crm_upsert_quote(validated)
             elif tool_name == "detect_lead_capture_readiness":
                 output = self._detect_lead_capture_readiness(validated)
             elif tool_name == "capture_lead_if_ready":
@@ -59,12 +67,12 @@ class ToolRegistry:
             output = {"error": f"tool execution failed: {type(exc).__name__}: {exc}"}
 
         normalized_output = validate_tool_output(tool_name, output)
+        logger.info("tool_execute_done tool=%s status=%s", tool_name, normalized_output.get("status"))
         return ToolExecutionResult(tool=tool_name, input=validated, output=normalized_output)
 
-    def _crm_upsert_quote(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _crm_upsert_quote(self, payload: dict[str, Any]) -> dict[str, Any]:
         quote = dict(payload["payload"])
-        quote_id = str(quote.get("quote_id", "quote-temp"))
-        return {"crm_id": quote_id, "status": "upserted"}
+        return await self._crm_provider.upsert_quote(quote)
 
     def _detect_lead_capture_readiness(self, payload: dict[str, Any]) -> dict[str, Any]:
         business_context = self._as_dict(payload.get("business_context"))
@@ -74,34 +82,6 @@ class ToolRegistry:
         lead_data = self._as_dict(payload.get("lead_data"))
 
         missing_critical_fields: list[str] = []
-        missing_critical_fields.extend(
-            self._missing_context_fields(
-                business_context,
-                "business_context",
-                ("what_sells", "sales_cycle", "qualification_fields", "first_call_questions"),
-            )
-        )
-        missing_critical_fields.extend(
-            self._missing_context_fields(
-                whatsapp_context,
-                "whatsapp_context",
-                ("brand_tone", "service_hours", "primary_language", "flow_type"),
-            )
-        )
-        missing_critical_fields.extend(
-            self._missing_context_fields(
-                crm_context,
-                "crm_context",
-                ("crm_name", "required_fields", "qualified_pipeline_stage"),
-            )
-        )
-        missing_critical_fields.extend(
-            self._missing_context_fields(
-                agent_limits,
-                "agent_limits",
-                ("resolves_alone", "escalation_triggers", "forbidden_statements", "disqualification_closure"),
-            )
-        )
 
         if self._is_missing(lead_data.get("need")) and self._is_missing(lead_data.get("pain_point")):
             missing_critical_fields.append("lead_data.need_or_pain_point")
@@ -126,6 +106,8 @@ class ToolRegistry:
         disqualify_reason = lead_data.get("disqualify_reason")
         out_of_scope = bool(lead_data.get("out_of_scope"))
         is_disqualified = out_of_scope or not self._is_missing(disqualify_reason)
+        buying_intent_value = str(lead_data.get("buying_intent", "")).strip().lower()
+        has_commercial_intent = buying_intent_value in {"alta", "media", "high", "medium"}
 
         qualification_evidence = self._build_qualification_evidence(lead_data)
         if is_disqualified:
@@ -133,8 +115,14 @@ class ToolRegistry:
                 qualification_evidence.append(f"disqualify_reason: {disqualify_reason}")
             if out_of_scope:
                 qualification_evidence.append("out_of_scope: true")
+        elif buying_intent_value:
+            qualification_evidence.append(f"intent_signal: {buying_intent_value}")
 
         if is_disqualified:
+            lead_status = "no_calificado"
+            next_action = "cierre_cordial"
+            ready_for_capture = False
+        elif not self._is_missing(lead_data.get("buying_intent")) and not has_commercial_intent:
             lead_status = "no_calificado"
             next_action = "cierre_cordial"
             ready_for_capture = False
@@ -159,6 +147,7 @@ class ToolRegistry:
             "whatsapp_context": whatsapp_context,
             "crm_context": crm_context,
             "agent_limits": agent_limits,
+            "lead_data": lead_data,
             "lead_status": lead_status,
             "qualification_evidence": qualification_evidence,
             "next_action": next_action,
@@ -204,7 +193,7 @@ class ToolRegistry:
                 "structured_payload": structured_payload,
             }
 
-        crm_result = self._crm_upsert_quote({"payload": structured_payload})
+        crm_result = await self._crm_upsert_quote({"payload": structured_payload})
         owner_notification = "skipped"
         owner_notification_error: str | None = None
 

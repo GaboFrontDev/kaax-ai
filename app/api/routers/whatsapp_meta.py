@@ -14,6 +14,7 @@ from app.channels.whatsapp_meta.client import send_meta_text_message
 from app.channels.whatsapp_meta.webhook import validate_meta_signature, verify_meta_webhook_token
 from app.infra.settings import Settings, get_settings
 from app.memory.session_manager import SessionBusyError
+from app.observability.logging import set_correlation
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["whatsapp_meta"])
@@ -121,9 +122,26 @@ async def whatsapp_meta_webhook(
 
     for inbound in inbound_messages:
         req = await _adapter.normalize_inbound(inbound)
+        inbound_run_id = str(inbound.get("wa_message_id") or "wa-meta-webhook")
+        set_correlation(thread_id=req.thread_id, run_id=inbound_run_id)
+        logger.info(
+            "meta_inbound_message thread_id=%s from=%s to=%s text=%s",
+            req.thread_id,
+            inbound.get("from", ""),
+            inbound.get("to", ""),
+            req.user_text[:300],
+        )
         try:
             result = await runtime.invoke(req)
+            runtime_run_id = str(result.get("run_id") or inbound_run_id)
+            set_correlation(thread_id=req.thread_id, run_id=runtime_run_id)
             response_text = str(result.get("response", "Mensaje recibido."))
+            logger.info(
+                "meta_runtime_result thread_id=%s run_id=%s tools_used=%s",
+                req.thread_id,
+                result.get("run_id"),
+                result.get("tools_used", []),
+            )
         except SessionBusyError:
             response_text = "Estoy procesando tu mensaje anterior. Enseguida continuo contigo."
         except Exception:
@@ -140,7 +158,7 @@ async def whatsapp_meta_webhook(
             continue
 
         try:
-            await send_meta_text_message(
+            meta_response = await send_meta_text_message(
                 api_version=settings.whatsapp_meta_api_version,
                 phone_number_id=phone_number_id,
                 access_token=settings.whatsapp_meta_access_token,
@@ -148,6 +166,16 @@ async def whatsapp_meta_webhook(
                 text=response_text,
             )
             sent += 1
+            logger.info(
+                "meta_send_ok thread_id=%s to=%s message_id=%s",
+                req.thread_id,
+                to_number,
+                (
+                    meta_response.get("messages", [{}])[0].get("id")
+                    if isinstance(meta_response.get("messages"), list)
+                    else None
+                ),
+            )
         except httpx.HTTPStatusError as exc:
             body = exc.response.text if exc.response is not None else ""
             logger.error(
@@ -167,5 +195,7 @@ async def whatsapp_meta_webhook(
                     "meta_to_number": to_number,
                 },
             )
+        finally:
+            set_correlation(None, None)
 
     return {"ok": True, "processed": processed, "sent": sent}

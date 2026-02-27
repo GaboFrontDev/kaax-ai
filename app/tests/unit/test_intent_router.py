@@ -47,3 +47,20 @@ def test_routing_response_conversation_end_is_closure() -> None:
     decision = route_intent("adios")
     response = build_routing_response(decision)
     assert "cerramos" in response.lower()
+
+
+def test_routing_response_first_turn_greeting_requests_lead_fields() -> None:
+    decision = route_intent("hola")
+    response = build_routing_response(decision, first_turn_greeting=True)
+    lowered = response.lower()
+    assert "nombre y empresa" in lowered
+    assert "crm actual" in lowered
+    assert "volumen aproximado" in lowered
+
+
+def test_routing_response_follow_up_greeting_is_shorter() -> None:
+    decision = route_intent("hola")
+    response = build_routing_response(decision, first_turn_greeting=False)
+    lowered = response.lower()
+    assert "nombre y empresa" not in lowered
+    assert "proceso a automatizar" in lowered

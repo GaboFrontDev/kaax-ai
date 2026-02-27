@@ -69,3 +69,21 @@ def test_default_runtime_conversation_end_returns_closure_message() -> None:
 
     assert result["tools_used"] == []
     assert "cerramos por ahora" in result["response"].lower()
+
+
+def test_default_runtime_auto_captures_lead_from_conversation_signals() -> None:
+    runtime = _build_runtime()
+    req = AssistRequest(
+        user_text=(
+            "Hola, soy Juan Perez de Acme SA. Quiero contratar automatizacion de WhatsApp "
+            "y CRM para ventas. Mi correo es juan@acme.com y presupuesto de 5000 usd "
+            "este trimestre."
+        ),
+        requestor="test",
+        thread_id="thread-4",
+    )
+
+    result = asyncio.run(runtime.invoke(req))
+
+    assert "capture_lead_if_ready" in result["tools_used"]
+    assert "pronto estaremos en contacto" in result["response"].lower()

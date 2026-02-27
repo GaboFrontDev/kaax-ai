@@ -72,6 +72,13 @@ _GENERIC_MESSAGES = {
     "info",
 }
 
+_GREETING_MESSAGES = {
+    "hola",
+    "buenas",
+    "buenos dias",
+    "buenos días",
+}
+
 _END_MESSAGES = {
     "gracias",
     "muchas gracias",
@@ -149,7 +156,11 @@ def route_intent(user_text: str, *, confidence_threshold: float = 0.7) -> Intent
     return IntentDecision(route="needs_clarification", confidence=0.68, reason="mixed_signals")
 
 
-def build_routing_response(decision: IntentDecision) -> str:
+def build_routing_response(
+    decision: IntentDecision,
+    *,
+    first_turn_greeting: bool = False,
+) -> str:
     if decision.route == "conversation_end":
         return (
             "Perfecto, cerramos por ahora. Cuando quieras retomar la automatizacion de conversaciones "
@@ -163,11 +174,37 @@ def build_routing_response(decision: IntentDecision) -> str:
             "de ese alcance. Si quieres, cuentame tu flujo de atencion o ventas y validamos encaje."
         )
 
+    return _build_needs_clarification_response(decision, first_turn_greeting=first_turn_greeting)
+
+
+def is_greeting_message(user_text: str) -> bool:
+    return _normalize(user_text) in _GREETING_MESSAGES
+
+
+def _build_needs_clarification_response(
+    decision: IntentDecision,
+    *,
+    first_turn_greeting: bool = False,
+) -> str:
+    if first_turn_greeting:
+        return (
+            "Hola, gracias por escribir. Soy kaax ai, un servicio de IA para automatizar conversaciones comerciales. "
+            "Te ayudo con automatizacion en WhatsApp, calificacion de leads, integracion CRM y handoff a equipo humano. "
+            "Para entender bien tu caso y ayudarte mejor, comparteme por favor: "
+            "nombre y empresa, que proceso quieres automatizar (ventas, soporte o ambos), "
+            "volumen aproximado de conversaciones al mes, CRM actual y un medio de contacto (correo o telefono)."
+        )
+
+    if decision.reason == "no_task_detected":
+        return (
+            "Perfecto, gracias por el contexto. Para ayudarte bien, dime que objetivo quieres resolver ahora "
+            "(automatizar ventas, soporte o ambos), volumen aproximado de conversaciones al mes y CRM actual."
+        )
+
     return (
-        "Hola, gracias por escribir. Soy kaax ai, un servicio de IA para automatizar conversaciones de negocio. "
-        "Nuestros servicios incluyen automatizacion de WhatsApp, calificacion de leads, integracion CRM y handoff humano. "
-        "Para orientarte mejor, ¿buscas automatizar ventas, soporte o ambos flujos? "
-        "Tambien me ayuda saber volumen aproximado de mensajes y CRM actual."
+        "Perfecto. Para continuar, comparteme por favor: "
+        "proceso a automatizar (ventas, soporte o ambos), volumen aproximado de conversaciones al mes, "
+        "CRM actual y un medio de contacto (correo o telefono)."
     )
 
 

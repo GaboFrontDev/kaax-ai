@@ -10,7 +10,14 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.intent_router import IntentDecision, build_routing_response
+from app.agent.lead_capture import (
+    build_conversational_lead_payload,
+    build_capture_response,
+    is_affirmative_capture,
+    is_capture_request,
+    parse_lead_payload_from_text,
+)
+from app.agent.intent_router import IntentDecision, build_routing_response, is_greeting_message
 from app.agent.intent_router_llm import LLMIntentRouter, IntentRoutingStructuredOutput
 from app.agent.middleware.prompt_sanitizer import PromptSanitizerMiddleware
 from app.agent.prompt_loader import load_prompt
@@ -283,6 +290,10 @@ class LangChainAgentRuntime:
         self._graph_lock = asyncio.Lock()
         self._llm_intent_router: LLMIntentRouter | None = None
         self._llm_intent_router_init_failed = False
+        self._seen_threads: set[str] = set()
+        self._pending_lead_payload_by_thread: dict[str, dict[str, Any]] = {}
+        self._user_messages_by_thread: dict[str, list[str]] = {}
+        self._captured_lead_threads: set[str] = set()
 
     async def _get_graph(self) -> Any:
         if self._graph is not None:
@@ -351,9 +362,31 @@ class LangChainAgentRuntime:
                     await self._attachment_store.put(req.thread_id, req.attachments)
 
                 user_text = self._sanitizer.sanitize(req.user_text)
+                logger.info("langchain_runtime_inbound thread_id=%s text=%s", req.thread_id, user_text[:300])
+                self._track_user_message(req.thread_id, user_text)
+                if (
+                    lead_response := await self._maybe_handle_explicit_lead_capture(
+                        thread_id=req.thread_id,
+                        user_text=user_text,
+                    )
+                ) is not None:
+                    attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
+                    return {
+                        "response": lead_response["response"],
+                        "tools_used": lead_response["tools_used"],
+                        "completion_time": round(time.perf_counter() - started_at, 3),
+                        "conversation_id": req.thread_id,
+                        "run_id": run_id,
+                        "attachments": attachments,
+                    }
+
+                first_turn = self._mark_and_check_first_turn(req.thread_id)
                 routing = await self._route_intent(user_text)
                 if routing.route != "in_scope":
-                    answer = build_routing_response(routing)
+                    answer = build_routing_response(
+                        routing,
+                        first_turn_greeting=first_turn and is_greeting_message(user_text),
+                    )
                     attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
                     return {
                         "response": answer,
@@ -373,12 +406,20 @@ class LangChainAgentRuntime:
                 answer = _extract_response_text(result)
                 if not answer:
                     answer = "No se generó respuesta del modelo."
+                auto_capture_tools: list[str] = []
+                auto_capture_response = await self._maybe_auto_capture_lead(
+                    thread_id=req.thread_id,
+                    user_text=user_text,
+                )
+                if auto_capture_response is not None:
+                    answer = f"{answer}\n\n{auto_capture_response['response']}".strip()
+                    auto_capture_tools = auto_capture_response["tools_used"]
 
                 attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
 
             return {
                 "response": answer,
-                "tools_used": self._extract_tools_used(result),
+                "tools_used": self._extract_tools_used(result) + auto_capture_tools,
                 "completion_time": round(time.perf_counter() - started_at, 3),
                 "conversation_id": req.thread_id,
                 "run_id": run_id,
@@ -397,10 +438,56 @@ class LangChainAgentRuntime:
                     await self._attachment_store.put(req.thread_id, req.attachments)
 
                 user_text = self._sanitizer.sanitize(req.user_text)
+                logger.info("langchain_runtime_inbound_stream thread_id=%s text=%s", req.thread_id, user_text[:300])
+                self._track_user_message(req.thread_id, user_text)
+                if (
+                    lead_response := await self._maybe_handle_explicit_lead_capture(
+                        thread_id=req.thread_id,
+                        user_text=user_text,
+                    )
+                ) is not None:
+                    for tool_name in lead_response["tools_used"]:
+                        yield StreamingEvent(
+                            type="tool_start",
+                            tool=tool_name,
+                            payload={"source": "lead_capture_fast_path"},
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+                        yield StreamingEvent(
+                            type="tool_result",
+                            tool=tool_name,
+                            payload={"status": "done"},
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+                    for chunk in self._chunk_text(lead_response["response"]):
+                        yield StreamingEvent(
+                            type="content",
+                            content=chunk,
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+                    attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
+                    yield StreamingEvent(
+                        type="complete",
+                        payload={
+                            "tools_used": lead_response["tools_used"],
+                            "attachments": attachments,
+                        },
+                        thread_id=req.thread_id,
+                        run_id=run_id,
+                    )
+                    return
+
+                first_turn = self._mark_and_check_first_turn(req.thread_id)
                 routing = await self._route_intent(user_text)
 
                 if routing.route != "in_scope":
-                    answer = build_routing_response(routing)
+                    answer = build_routing_response(
+                        routing,
+                        first_turn_greeting=first_turn and is_greeting_message(user_text),
+                    )
                     for chunk in self._chunk_text(answer):
                         yield StreamingEvent(
                             type="content",
@@ -484,6 +571,36 @@ class LangChainAgentRuntime:
                 if not answer:
                     answer = "No se generó respuesta del modelo."
 
+                auto_capture_response = await self._maybe_auto_capture_lead(
+                    thread_id=req.thread_id,
+                    user_text=user_text,
+                )
+                if auto_capture_response is not None:
+                    for tool_name in auto_capture_response["tools_used"]:
+                        if tool_name not in tools_used:
+                            tools_used.append(tool_name)
+                        yield StreamingEvent(
+                            type="tool_start",
+                            tool=tool_name,
+                            payload={"source": "lead_capture_auto"},
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+                        yield StreamingEvent(
+                            type="tool_result",
+                            tool=tool_name,
+                            payload={"status": "done"},
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+                    for chunk in self._chunk_text(auto_capture_response["response"]):
+                        yield StreamingEvent(
+                            type="content",
+                            content=chunk,
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+
                 attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
                 yield StreamingEvent(
                     type="complete",
@@ -516,6 +633,101 @@ class LangChainAgentRuntime:
         if decision.reason == "llm_router_failed":
             return IntentDecision(route="in_scope", confidence=0.0, reason="intent_router_failed_open")
         return decision
+
+    async def _maybe_handle_explicit_lead_capture(
+        self,
+        *,
+        thread_id: str,
+        user_text: str,
+    ) -> dict[str, Any] | None:
+        parsed_payload = parse_lead_payload_from_text(user_text)
+        if parsed_payload:
+            self._pending_lead_payload_by_thread[thread_id] = parsed_payload
+            logger.info("langchain_lead_payload_staged thread_id=%s sections=%s", thread_id, sorted(parsed_payload.keys()))
+
+        wants_capture = is_capture_request(user_text) or is_affirmative_capture(user_text)
+        if not wants_capture:
+            return None
+
+        payload = parsed_payload or self._pending_lead_payload_by_thread.get(thread_id)
+        if payload is None:
+            return {
+                "response": (
+                    "Para registrarlo necesito estos datos minimos: empresa, contacto (email o telefono), "
+                    "necesidad principal y timeline."
+                ),
+                "tools_used": [],
+            }
+
+        tool_payload = dict(payload)
+        tool_payload["notify_owner"] = False
+        result = await self._tool_registry.execute("capture_lead_if_ready", tool_payload)
+        logger.info(
+            "langchain_lead_capture_result thread_id=%s output=%s",
+            thread_id,
+            json.dumps(result.output, ensure_ascii=True),
+        )
+        if str(result.output.get("status", "")).lower() == "captured":
+            self._pending_lead_payload_by_thread.pop(thread_id, None)
+            self._captured_lead_threads.add(thread_id)
+
+        return {"response": build_capture_response(result.output), "tools_used": [result.tool]}
+
+    async def _maybe_auto_capture_lead(
+        self,
+        *,
+        thread_id: str,
+        user_text: str,
+    ) -> dict[str, Any] | None:
+        if thread_id in self._captured_lead_threads:
+            return None
+
+        payload = build_conversational_lead_payload(
+            self._user_messages_as_state(thread_id),
+            latest_user_text=user_text,
+        )
+        if payload is None:
+            return None
+
+        readiness = await self._tool_registry.execute("detect_lead_capture_readiness", payload)
+        if not bool(readiness.output.get("ready_for_capture")):
+            logger.info(
+                "langchain_lead_capture_auto_skipped thread_id=%s missing=%s",
+                thread_id,
+                readiness.output.get("missing_critical_fields", []),
+            )
+            return None
+
+        capture_payload = dict(payload)
+        capture_payload["notify_owner"] = False
+        result = await self._tool_registry.execute("capture_lead_if_ready", capture_payload)
+        logger.info(
+            "langchain_lead_capture_auto_result thread_id=%s output=%s",
+            thread_id,
+            json.dumps(result.output, ensure_ascii=True),
+        )
+        if str(result.output.get("status", "")).lower() != "captured":
+            return None
+
+        self._captured_lead_threads.add(thread_id)
+        return {"response": build_capture_response(result.output), "tools_used": [result.tool]}
+
+    def _mark_and_check_first_turn(self, thread_id: str) -> bool:
+        first_turn = thread_id not in self._seen_threads
+        self._seen_threads.add(thread_id)
+        return first_turn
+
+    def _track_user_message(self, thread_id: str, user_text: str) -> None:
+        history = self._user_messages_by_thread.setdefault(thread_id, [])
+        cleaned = user_text.strip()
+        if cleaned:
+            history.append(cleaned)
+        if len(history) > 20:
+            del history[:-20]
+
+    def _user_messages_as_state(self, thread_id: str) -> list[dict[str, Any]]:
+        history = self._user_messages_by_thread.get(thread_id, [])
+        return [{"role": "user", "content": message} for message in history]
 
     async def _get_llm_intent_router(self) -> LLMIntentRouter | None:
         if self._llm_intent_router is not None:
