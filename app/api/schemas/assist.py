@@ -42,6 +42,7 @@ class AgentAssistResponse(BaseModel):
 
     response: str
     tools_used: list[str]
+    memory_intent: str | None = None
     completion_time: float
     conversation_id: str | None = None
     run_id: str | None = None

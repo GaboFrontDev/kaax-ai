@@ -118,7 +118,10 @@ async def assist(
         event_type="assist_response",
         success=True,
         run_id=str(result.get("run_id") or ""),
-        metadata={"tools_used": result.get("tools_used", [])},
+        metadata={
+            "tools_used": result.get("tools_used", []),
+            "memory_intent": result.get("memory_intent"),
+        },
     )
     return AgentAssistResponse(**result)
 

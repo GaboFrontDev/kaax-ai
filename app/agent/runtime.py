@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.event_mapper import LangChainStreamEventMapper
+from app.agent.memory_intent_graph import MemoryIntentDecision, MemoryIntentGraph
 from app.agent.middleware.prompt_sanitizer import PromptSanitizerMiddleware
 from app.agent.result_parser import dedupe_tools, extract_response_text, extract_tools_used
 from app.agent.tools.context import ToolRequestContextManager
@@ -59,6 +60,7 @@ class LangChainAgentRuntime:
         sanitizer: PromptSanitizerMiddleware,
         graph_factory: Callable[[Any | None], Any],
         checkpointer_manager: LangGraphCheckpointerManager | None,
+        memory_intent_graph: MemoryIntentGraph | None = None,
     ) -> None:
         self._session_manager = session_manager
         self._attachment_store = attachment_store
@@ -66,6 +68,7 @@ class LangChainAgentRuntime:
         self._sanitizer = sanitizer
         self._graph_factory = graph_factory
         self._checkpointer_manager = checkpointer_manager
+        self._memory_intent_graph = memory_intent_graph
 
         self._graph: Any | None = None
         self._graph_lock = asyncio.Lock()
@@ -85,6 +88,15 @@ class LangChainAgentRuntime:
             self._graph = self._graph_factory(checkpointer)
             return self._graph
 
+    async def _classify_memory_intent(self, user_text: str) -> MemoryIntentDecision | None:
+        if self._memory_intent_graph is None:
+            return None
+        try:
+            return await self._memory_intent_graph.classify(user_text)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("memory_intent_graph_runtime_error: %s", exc)
+            return None
+
     async def invoke(self, req: AssistRequest) -> dict[str, Any]:
         started_at = time.perf_counter()
         run_id = str(uuid4())
@@ -92,15 +104,25 @@ class LangChainAgentRuntime:
 
         try:
             async with self._session_manager.session_lock(req.thread_id):
+                user_text = self._sanitizer.sanitize(req.user_text)
+                logger.info("langchain_runtime_inbound thread_id=%s text=%s", req.thread_id, user_text[:300])
+                memory_intent = await self._classify_memory_intent(user_text)
+                if memory_intent is not None:
+                    logger.info(
+                        "memory_intent thread_id=%s operation=%s confidence=%.3f",
+                        req.thread_id,
+                        memory_intent.operation,
+                        memory_intent.confidence,
+                    )
+
                 async with self._tool_context_manager.request_context(
                     thread_id=req.thread_id,
                     requestor=req.requestor,
+                    memory_intent=memory_intent.operation if memory_intent is not None else None,
+                    memory_intent_confidence=memory_intent.confidence if memory_intent is not None else None,
                 ):
                     if req.attachments:
                         await self._attachment_store.put(req.thread_id, req.attachments)
-
-                    user_text = self._sanitizer.sanitize(req.user_text)
-                    logger.info("langchain_runtime_inbound thread_id=%s text=%s", req.thread_id, user_text[:300])
 
                     graph = await self._get_graph()
 
@@ -121,6 +143,7 @@ class LangChainAgentRuntime:
                 "conversation_id": req.thread_id,
                 "run_id": run_id,
                 "attachments": attachments,
+                "memory_intent": memory_intent.operation if memory_intent is not None else None,
             }
         finally:
             set_correlation(None, None)
@@ -131,15 +154,25 @@ class LangChainAgentRuntime:
 
         try:
             async with self._session_manager.session_lock(req.thread_id):
+                user_text = self._sanitizer.sanitize(req.user_text)
+                logger.info("langchain_runtime_inbound_stream thread_id=%s text=%s", req.thread_id, user_text[:300])
+                memory_intent = await self._classify_memory_intent(user_text)
+                if memory_intent is not None:
+                    logger.info(
+                        "memory_intent thread_id=%s operation=%s confidence=%.3f",
+                        req.thread_id,
+                        memory_intent.operation,
+                        memory_intent.confidence,
+                    )
+
                 async with self._tool_context_manager.request_context(
                     thread_id=req.thread_id,
                     requestor=req.requestor,
+                    memory_intent=memory_intent.operation if memory_intent is not None else None,
+                    memory_intent_confidence=memory_intent.confidence if memory_intent is not None else None,
                 ):
                     if req.attachments:
                         await self._attachment_store.put(req.thread_id, req.attachments)
-
-                    user_text = self._sanitizer.sanitize(req.user_text)
-                    logger.info("langchain_runtime_inbound_stream thread_id=%s text=%s", req.thread_id, user_text[:300])
 
                     graph = await self._get_graph()
 
@@ -165,6 +198,7 @@ class LangChainAgentRuntime:
                         payload={
                             "tools_used": dedupe_tools(mapper.tools_used),
                             "attachments": attachments,
+                            "memory_intent": memory_intent.operation if memory_intent is not None else None,
                         },
                         thread_id=req.thread_id,
                         run_id=run_id,

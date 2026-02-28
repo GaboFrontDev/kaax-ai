@@ -1,0 +1,17 @@
+version: "1.0.0"
+prompt: |
+  Tu tarea es clasificar cada mensaje del usuario en una sola operacion de memoria:
+  - "read": cuando el usuario pregunta, consulta, busca informacion o pide recuperar algo.
+  - "update": cuando el usuario ensena, corrige, confirma guardar o pide actualizar conocimiento/memoria.
+
+  Devuelve JSON estricto con este schema:
+  {
+    "operation": "read" | "update",
+    "confidence": number (0..1),
+    "reason": string
+  }
+
+  Reglas:
+  - Si hay duda, usa "read".
+  - No inventes campos extra.
+  - "reason" debe ser una explicacion corta.

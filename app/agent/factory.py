@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from app.agent.builder import build_agent_graph
+from app.agent.memory_intent_graph import MemoryIntentGraph
 from app.agent.middleware.prompt_sanitizer import PromptSanitizerMiddleware
 from app.agent.prompt_loader import load_prompt
 from app.agent.runtime import AgentRuntime, LangChainAgentRuntime
@@ -40,6 +41,8 @@ def build_agent(
     model_temperature: float = 0.5,
     prompt_name: str = "default",
     langchain_summarization_enabled: bool = True,
+    memory_intent_enabled: bool = True,
+    memory_intent_model_name: str | None = None,
     checkpointer_manager: Any | None = None,
 ) -> AgentRuntime:
     sanitizer = PromptSanitizerMiddleware()
@@ -47,6 +50,13 @@ def build_agent(
 
     if runtime_backend.lower() != "langchain":
         raise ValueError("Only LangChain runtime is supported. Set AGENT_RUNTIME_BACKEND=langchain.")
+
+    memory_intent_graph: MemoryIntentGraph | None = None
+    if memory_intent_enabled:
+        memory_intent_graph = MemoryIntentGraph(
+            model_name=memory_intent_model_name or small_model_name,
+            aws_region=aws_region,
+        )
 
     def graph_factory(checkpointer: Any | None) -> Any:
         return build_agent_graph(
@@ -79,6 +89,7 @@ def build_agent(
             sanitizer=sanitizer,
             graph_factory=graph_factory,
             checkpointer_manager=checkpointer_manager,
+            memory_intent_graph=memory_intent_graph,
         )
     except Exception as exc:  # pragma: no cover - optional path
         logger.exception("langchain_runtime_init_failed")

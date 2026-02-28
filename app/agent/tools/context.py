@@ -28,13 +28,22 @@ class ToolRequestContextManager:
         thread_id: str,
         requestor: str,
         agent_id: str | None = None,
+        memory_intent: str | None = None,
+        memory_intent_confidence: float | None = None,
     ):
         resolved_agent_id = (agent_id or self._agent_id).strip() or self._agent_id
+        resolved_confidence = (
+            float(memory_intent_confidence)
+            if isinstance(memory_intent_confidence, (int, float))
+            else None
+        )
         context = KnowledgeRequestContext(
             thread_id=thread_id,
             requestor=requestor,
             tenant_id=self._derive_tenant_id(requestor),
             agent_id=resolved_agent_id,
+            memory_intent=memory_intent,
+            memory_intent_confidence=resolved_confidence,
         )
         token = self._context.set(context)
         try:

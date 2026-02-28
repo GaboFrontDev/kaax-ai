@@ -6,6 +6,7 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain_aws import ChatBedrockConverse
 
+from app.agent.memory_intent_graph import MemoryIntentState, build_memory_intent_tool
 from app.agent.tools.capture_lead_if_ready_tool import CaptureLeadIfReadyTool
 from app.agent.tools.context import ToolRequestContextManager
 from app.agent.tools.crm_upsert_quote_tool import CrmUpsertQuoteTool
@@ -33,6 +34,7 @@ def build_tools(
     knowledge_learn_detector_model_name: str = "anthropic.claude-3-haiku-20240307-v1:0",
     knowledge_learn_detector_region: str = "us-east-1",
     knowledge_learn_detector: Any | None = None,
+    checkpointer: Any | None = None,
 ) -> list[Any]:
     crm_upsert_tool = CrmUpsertQuoteTool(crm_provider=crm_provider)
     readiness_tool = DetectLeadCaptureReadinessTool()
@@ -61,10 +63,36 @@ def build_tools(
         detector=detector,
         confidence_threshold=knowledge_learn_confidence_threshold,
     )
+
+    async def _read_handler(state: MemoryIntentState) -> dict[str, Any]:
+        return await knowledge_search_tool.execute(
+            {
+                "query": state.user_message,
+                "limit": max(1, int(state.limit or knowledge_search_default_limit)),
+            }
+        )
+
+    async def _update_handler(state: MemoryIntentState) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "source_text": state.user_message,
+            "confirm": bool(state.confirm),
+        }
+        if state.topic_hint:
+            payload["topic_hint"] = state.topic_hint
+        return await knowledge_learn_tool.execute(payload)
+
+    memory_intent_tool = build_memory_intent_tool(
+        model_name=knowledge_learn_detector_model_name,
+        aws_region=knowledge_learn_detector_region,
+        read_handler=_read_handler,
+        update_handler=_update_handler,
+        checkpointer=checkpointer,
+    )
     return [
         crm_upsert_tool,
         readiness_tool,
         capture_tool,
+        memory_intent_tool,
         knowledge_search_tool,
         knowledge_learn_tool,
     ]
@@ -119,6 +147,7 @@ def build_agent_graph(
             knowledge_learn_detector_model_name=knowledge_learn_detector_model_name,
             knowledge_learn_detector_region=knowledge_learn_detector_region,
             knowledge_learn_detector=knowledge_learn_detector,
+            checkpointer=checkpointer,
         )
     )
     configured_middleware = list(middleware or [])

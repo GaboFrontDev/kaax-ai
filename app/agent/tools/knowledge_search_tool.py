@@ -17,6 +17,8 @@ class KnowledgeRequestContext:
     requestor: str
     tenant_id: str
     agent_id: str
+    memory_intent: str | None = None
+    memory_intent_confidence: float | None = None
 
 
 class KnowledgeSearchArgs(BaseModel):

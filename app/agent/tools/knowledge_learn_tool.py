@@ -130,13 +130,20 @@ class KnowledgeLearnTool(BaseTool):
         topic_hint = payload.get("topic_hint")
         topic_hint_text = str(topic_hint).strip() if isinstance(topic_hint, str) else None
         confirm = bool(payload.get("confirm"))
+        routed_as_update = context.memory_intent == "update"
+        routed_confidence = (
+            float(context.memory_intent_confidence)
+            if isinstance(context.memory_intent_confidence, (int, float))
+            else None
+        )
         logger.info(
-            "knowledge_learn_attempt tenant_id=%s agent_id=%s requestor=%s thread_id=%s confirm=%s",
+            "knowledge_learn_attempt tenant_id=%s agent_id=%s requestor=%s thread_id=%s confirm=%s routed_intent=%s",
             context.tenant_id,
             context.agent_id,
             context.requestor,
             context.thread_id,
             confirm,
+            context.memory_intent,
         )
 
         if confirm or self._looks_like_confirmation(source_text):
@@ -144,10 +151,40 @@ class KnowledgeLearnTool(BaseTool):
             if confirmed is not None:
                 return confirmed
 
+            # If there is explicit confirmation and router marked update,
+            # persist directly even when there is no pending draft.
+            if confirm and routed_as_update:
+                forced_confidence = routed_confidence if routed_confidence is not None else 0.8
+                return await self._persist_learning(
+                    context=context,
+                    topic_hint_text=topic_hint_text,
+                    source_text=source_text,
+                    confidence=forced_confidence,
+                    reason="memory_intent_router_update_with_confirm",
+                    metadata_extra={"forced_by_confirm": True},
+                )
+
         self._drop_expired_pending()
         detection = await self.detector.detect(source_text=source_text, topic_hint=topic_hint_text)
 
         if not detection.is_learning_instruction:
+            if routed_as_update:
+                forced_confidence = (
+                    max(float(detection.confidence), routed_confidence)
+                    if routed_confidence is not None
+                    else max(float(detection.confidence), 0.7)
+                )
+                return await self._persist_learning(
+                    context=context,
+                    topic_hint_text=topic_hint_text,
+                    source_text=source_text,
+                    confidence=forced_confidence,
+                    reason="memory_intent_router_update_fallback",
+                    metadata_extra={
+                        "detector_is_learning_instruction": False,
+                        "detector_reason": detection.reason,
+                    },
+                )
             return {
                 "status": "ignored_not_instruction",
                 "confidence": float(detection.confidence),
@@ -170,6 +207,20 @@ class KnowledgeLearnTool(BaseTool):
             }
 
         if float(detection.confidence) < self.confidence_threshold:
+            if routed_as_update:
+                forced_confidence = (
+                    max(float(detection.confidence), routed_confidence)
+                    if routed_confidence is not None
+                    else max(float(detection.confidence), 0.7)
+                )
+                return await self._persist_learning(
+                    context=context,
+                    topic_hint_text=topic_hint_text,
+                    source_text=source_text,
+                    confidence=forced_confidence,
+                    reason="memory_intent_router_update_low_confidence_bypass",
+                    metadata_extra={"detector_reason": detection.reason},
+                )
             pending_ttl = timedelta(minutes=max(1, self.pending_ttl_minutes))
             self.pending_by_thread[context.thread_id] = PendingKnowledgeLearn(
                 topic=topic,
@@ -198,37 +249,19 @@ class KnowledgeLearnTool(BaseTool):
                 "pending": True,
             }
 
-        write_result = await self.knowledge_provider.upsert_topic(
-            tenant_id=context.tenant_id,
-            agent_id=context.agent_id,
-            topic=topic,
-            content=content,
-            source="chat",
-            author=context.requestor,
-            metadata={
-                "thread_id": context.thread_id,
+        return await self._persist_learning(
+            context=context,
+            topic_hint_text=topic_hint_text,
+            source_text=source_text,
+            confidence=float(detection.confidence),
+            reason=detection.reason,
+            normalized_topic=detection.topic,
+            normalized_content=detection.normalized_content,
+            metadata_extra={
                 "detector_confidence": float(detection.confidence),
                 "detector_reason": detection.reason,
             },
         )
-        self.pending_by_thread.pop(context.thread_id, None)
-        logger.info(
-            "knowledge_learn_saved tenant_id=%s agent_id=%s thread_id=%s topic=%s knowledge_id=%s version=%s",
-            context.tenant_id,
-            context.agent_id,
-            context.thread_id,
-            write_result.topic,
-            write_result.knowledge_id,
-            write_result.version,
-        )
-        return {
-            "status": "learned",
-            "confidence": float(detection.confidence),
-            "topic": write_result.topic,
-            "knowledge_id": write_result.knowledge_id,
-            "message": "Conocimiento guardado correctamente.",
-            "pending": False,
-        }
 
     async def _arun(self, source_text: str, confirm: bool = False, topic_hint: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"source_text": source_text, "confirm": bool(confirm)}
@@ -285,6 +318,67 @@ class KnowledgeLearnTool(BaseTool):
         expired = [thread_id for thread_id, pending in self.pending_by_thread.items() if pending.expires_at <= now]
         for thread_id in expired:
             self.pending_by_thread.pop(thread_id, None)
+
+    async def _persist_learning(
+        self,
+        *,
+        context: KnowledgeRequestContext,
+        topic_hint_text: str | None,
+        source_text: str,
+        confidence: float,
+        reason: str,
+        normalized_topic: str | None = None,
+        normalized_content: str | None = None,
+        metadata_extra: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
+        topic = self._normalize_topic(normalized_topic or topic_hint_text or source_text)
+        content = self._normalize_content(normalized_content or source_text)
+        if not topic or not content:
+            return {
+                "status": "ignored_not_instruction",
+                "confidence": confidence,
+                "topic": topic or None,
+                "knowledge_id": None,
+                "message": "No pude extraer un tema y contenido validos para aprender.",
+                "pending": False,
+            }
+
+        metadata: dict[str, object] = {
+            "thread_id": context.thread_id,
+            "memory_intent": context.memory_intent,
+            "memory_intent_confidence": context.memory_intent_confidence,
+            "reason": reason,
+        }
+        if metadata_extra:
+            metadata.update(metadata_extra)
+
+        write_result = await self.knowledge_provider.upsert_topic(
+            tenant_id=context.tenant_id,
+            agent_id=context.agent_id,
+            topic=topic,
+            content=content,
+            source="chat",
+            author=context.requestor,
+            metadata=metadata,
+        )
+        self.pending_by_thread.pop(context.thread_id, None)
+        logger.info(
+            "knowledge_learn_saved tenant_id=%s agent_id=%s thread_id=%s topic=%s knowledge_id=%s version=%s",
+            context.tenant_id,
+            context.agent_id,
+            context.thread_id,
+            write_result.topic,
+            write_result.knowledge_id,
+            write_result.version,
+        )
+        return {
+            "status": "learned",
+            "confidence": confidence,
+            "topic": write_result.topic,
+            "knowledge_id": write_result.knowledge_id,
+            "message": "Conocimiento guardado correctamente.",
+            "pending": False,
+        }
 
     @staticmethod
     def _looks_like_confirmation(text: str) -> bool:
