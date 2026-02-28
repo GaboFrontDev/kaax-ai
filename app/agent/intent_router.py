@@ -188,23 +188,24 @@ def _build_needs_clarification_response(
 ) -> str:
     if first_turn_greeting:
         return (
-            "Hola, gracias por escribir. Soy kaax ai, un servicio de IA para automatizar conversaciones comerciales. "
-            "Te ayudo con automatizacion en WhatsApp, calificacion de leads, integracion CRM y handoff a equipo humano. "
-            "Para entender bien tu caso y ayudarte mejor, comparteme por favor: "
-            "nombre y empresa, que proceso quieres automatizar (ventas, soporte o ambos), "
-            "volumen aproximado de conversaciones al mes, CRM actual y un medio de contacto (correo o telefono)."
+            "Hola, soy kaax ai. Ayudo a empresas a automatizar WhatsApp, calificar leads e integrar su CRM para vender y atender mejor.\n\n"
+            "Para proponerte el mejor flujo, comparteme:\n"
+            "- Nombre y empresa\n"
+            "- Proceso a automatizar (ventas, soporte o ambos)\n"
+            "- Volumen mensual de conversaciones\n"
+            "- CRM actual\n"
+            "- Contacto preferido (email o telefono)"
         )
 
     if decision.reason == "no_task_detected":
         return (
-            "Perfecto, gracias por el contexto. Para ayudarte bien, dime que objetivo quieres resolver ahora "
-            "(automatizar ventas, soporte o ambos), volumen aproximado de conversaciones al mes y CRM actual."
+            "Perfecto, gracias por el contexto. Para ayudarte mejor, comparteme: "
+            "proceso a automatizar, volumen mensual de conversaciones y CRM actual."
         )
 
     return (
-        "Perfecto. Para continuar, comparteme por favor: "
-        "proceso a automatizar (ventas, soporte o ambos), volumen aproximado de conversaciones al mes, "
-        "CRM actual y un medio de contacto (correo o telefono)."
+        "Perfecto. Para continuar, comparteme: "
+        "proceso a automatizar, volumen mensual de conversaciones, CRM actual y contacto preferido."
     )
 
 

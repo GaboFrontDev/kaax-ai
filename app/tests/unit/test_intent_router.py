@@ -55,7 +55,7 @@ def test_routing_response_first_turn_greeting_requests_lead_fields() -> None:
     lowered = response.lower()
     assert "nombre y empresa" in lowered
     assert "crm actual" in lowered
-    assert "volumen aproximado" in lowered
+    assert "volumen mensual" in lowered
 
 
 def test_routing_response_follow_up_greeting_is_shorter() -> None:

@@ -206,7 +206,10 @@ def is_affirmative_capture(text: str) -> bool:
 def build_capture_response(output: dict[str, Any]) -> str:
     status = str(output.get("status", "")).strip().lower()
     if status == "captured":
-        return "Gracias. Pronto estaremos en contacto contigo para continuar con tu solicitud."
+        return (
+            "Gracias. Pronto estaremos en contacto contigo para coordinar una reunion virtual "
+            "con nuestro equipo de ventas y explicarte la implementacion para tu empresa."
+        )
 
     if status == "missing_fields":
         missing = output.get("missing_critical_fields")

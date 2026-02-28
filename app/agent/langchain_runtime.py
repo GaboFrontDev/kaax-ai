@@ -180,7 +180,7 @@ def build_langchain_tools(tool_registry: ToolRegistry) -> list[Any]:
 
     @tool
     async def crm_upsert_quote(payload: dict[str, Any]) -> dict[str, Any]:
-        """Upsert quote data in CRM using a structured payload."""
+        """Store quote/lead data in kaax internal CRM registry using a structured payload."""
 
         return (await tool_registry.execute("crm_upsert_quote", {"payload": payload})).output
 
@@ -191,7 +191,7 @@ def build_langchain_tools(tool_registry: ToolRegistry) -> list[Any]:
         agent_limits: dict[str, Any] | None = None,
         lead_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Detect if a lead has enough context and evidence to be captured in CRM."""
+        """Detect if a lead has enough context and evidence to be registered internally in kaax CRM."""
 
         payload: dict[str, Any] = {}
         if business_context is not None:
@@ -209,7 +209,7 @@ def build_langchain_tools(tool_registry: ToolRegistry) -> list[Any]:
 
     detect_lead_capture_readiness = StructuredTool.from_function(
         name="detect_lead_capture_readiness",
-        description="Detect if a lead has enough context and evidence to be captured in CRM.",
+        description="Detect if a lead has enough context and evidence to be registered in kaax internal CRM.",
         args_schema=DetectLeadCaptureReadinessArgs,
         coroutine=_detect_lead_capture_readiness,
     )
@@ -239,7 +239,7 @@ def build_langchain_tools(tool_registry: ToolRegistry) -> list[Any]:
     capture_lead_if_ready = StructuredTool.from_function(
         name="capture_lead_if_ready",
         description=(
-            "Validate lead readiness, capture in CRM when all required fields are present, "
+            "Validate lead readiness, register in kaax internal CRM when required fields are present, "
             "and optionally notify owner by WhatsApp."
         ),
         args_schema=CaptureLeadIfReadyArgs,

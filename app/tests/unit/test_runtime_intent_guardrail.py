@@ -54,7 +54,7 @@ def test_default_runtime_ambiguous_request_requests_clarification() -> None:
     result = asyncio.run(runtime.invoke(req))
 
     assert result["tools_used"] == []
-    assert "automatizar ventas" in result["response"].lower()
+    assert "proceso a automatizar" in result["response"].lower()
 
 
 def test_default_runtime_conversation_end_returns_closure_message() -> None:
