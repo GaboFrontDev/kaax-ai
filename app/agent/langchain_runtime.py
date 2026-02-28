@@ -8,8 +8,6 @@ import time
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from app.agent.lead_capture import (
     build_conversational_lead_payload,
     build_capture_response,
@@ -22,6 +20,7 @@ from app.agent.intent_router_llm import LLMIntentRouter, IntentRoutingStructured
 from app.agent.middleware.prompt_sanitizer import PromptSanitizerMiddleware
 from app.agent.prompt_loader import load_prompt
 from app.agent.runtime import AssistRequest, StreamingEvent, _content_to_text
+from app.agent.tools.langchain.builder import build_langchain_tools
 from app.agent.tools.registry import ToolRegistry
 from app.memory.attachments_store import AttachmentStore
 from app.memory.langgraph_checkpointer import LangGraphCheckpointerManager
@@ -33,27 +32,6 @@ logger = logging.getLogger(__name__)
 
 _THINKING_BLOCK_RE = re.compile(r"(?is)<thinking\b[^>]*>.*?</thinking\s*>")
 _THINKING_TAG_RE = re.compile(r"(?is)</?thinking\b[^>]*>")
-
-
-class DetectLeadCaptureReadinessArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    business_context: dict[str, Any] = Field(default_factory=dict)
-    whatsapp_context: dict[str, Any] = Field(default_factory=dict)
-    crm_context: dict[str, Any] = Field(default_factory=dict)
-    agent_limits: dict[str, Any] = Field(default_factory=dict)
-    lead_data: dict[str, Any] = Field(default_factory=dict)
-
-
-class CaptureLeadIfReadyArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    business_context: dict[str, Any] = Field(default_factory=dict)
-    whatsapp_context: dict[str, Any] = Field(default_factory=dict)
-    crm_context: dict[str, Any] = Field(default_factory=dict)
-    agent_limits: dict[str, Any] = Field(default_factory=dict)
-    lead_data: dict[str, Any] = Field(default_factory=dict)
-    notify_owner: bool = False
 
 
 def _strip_thinking_tags(text: str) -> str:
@@ -173,84 +151,6 @@ def _extract_response_text(result: Any) -> str:
         text = _content_to_text(result)
 
     return _strip_thinking_tags(text)
-
-
-def build_langchain_tools(tool_registry: ToolRegistry) -> list[Any]:
-    from langchain_core.tools import StructuredTool, tool
-
-    @tool
-    async def crm_upsert_quote(payload: dict[str, Any]) -> dict[str, Any]:
-        """Store quote/lead data in kaax internal CRM registry using a structured payload."""
-
-        return (await tool_registry.execute("crm_upsert_quote", {"payload": payload})).output
-
-    async def _detect_lead_capture_readiness(
-        business_context: dict[str, Any] | None = None,
-        whatsapp_context: dict[str, Any] | None = None,
-        crm_context: dict[str, Any] | None = None,
-        agent_limits: dict[str, Any] | None = None,
-        lead_data: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Detect if a lead has enough context and evidence to be registered internally in kaax CRM."""
-
-        payload: dict[str, Any] = {}
-        if business_context is not None:
-            payload["business_context"] = business_context
-        if whatsapp_context is not None:
-            payload["whatsapp_context"] = whatsapp_context
-        if crm_context is not None:
-            payload["crm_context"] = crm_context
-        if agent_limits is not None:
-            payload["agent_limits"] = agent_limits
-        if lead_data is not None:
-            payload["lead_data"] = lead_data
-
-        return (await tool_registry.execute("detect_lead_capture_readiness", payload)).output
-
-    detect_lead_capture_readiness = StructuredTool.from_function(
-        name="detect_lead_capture_readiness",
-        description="Detect if a lead has enough context and evidence to be registered in kaax internal CRM.",
-        args_schema=DetectLeadCaptureReadinessArgs,
-        coroutine=_detect_lead_capture_readiness,
-    )
-
-    async def _capture_lead_if_ready(
-        business_context: dict[str, Any] | None = None,
-        whatsapp_context: dict[str, Any] | None = None,
-        crm_context: dict[str, Any] | None = None,
-        agent_limits: dict[str, Any] | None = None,
-        lead_data: dict[str, Any] | None = None,
-        notify_owner: bool = False,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"notify_owner": bool(notify_owner)}
-        if business_context is not None:
-            payload["business_context"] = business_context
-        if whatsapp_context is not None:
-            payload["whatsapp_context"] = whatsapp_context
-        if crm_context is not None:
-            payload["crm_context"] = crm_context
-        if agent_limits is not None:
-            payload["agent_limits"] = agent_limits
-        if lead_data is not None:
-            payload["lead_data"] = lead_data
-
-        return (await tool_registry.execute("capture_lead_if_ready", payload)).output
-
-    capture_lead_if_ready = StructuredTool.from_function(
-        name="capture_lead_if_ready",
-        description=(
-            "Validate lead readiness, register in kaax internal CRM when required fields are present, "
-            "and optionally notify owner by WhatsApp."
-        ),
-        args_schema=CaptureLeadIfReadyArgs,
-        coroutine=_capture_lead_if_ready,
-    )
-
-    return [
-        crm_upsert_quote,
-        detect_lead_capture_readiness,
-        capture_lead_if_ready,
-    ]
 
 
 class LangChainAgentRuntime:
