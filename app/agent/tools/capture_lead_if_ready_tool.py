@@ -25,8 +25,8 @@ class CaptureLeadIfReadyArgs(BaseModel):
 class CaptureLeadIfReadyTool(BaseTool):
     name: str = "capture_lead_if_ready"
     description: str = (
-        "Validate lead readiness, register in kaax internal CRM when required fields are present, "
-        "and optionally notify owner by WhatsApp."
+        "Capture contact leads in kaax internal CRM with minimal required fields: "
+        "contact_name, phone, and contact_schedule. Optionally notify owner by WhatsApp."
     )
     args_schema: Optional[ArgsSchema] = CaptureLeadIfReadyArgs
     return_direct: bool = False

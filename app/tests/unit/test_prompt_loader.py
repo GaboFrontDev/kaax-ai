@@ -10,7 +10,7 @@ def test_load_prompt_reads_yaml_file(monkeypatch) -> None:
 
     prompt = prompt_loader.load_prompt("agent")
 
-    assert "customer support and commercial discovery assistant" in prompt
+    assert "customer support and lead-contact assistant" in prompt
     assert "Always respond in neutral Spanish" in prompt
 
 

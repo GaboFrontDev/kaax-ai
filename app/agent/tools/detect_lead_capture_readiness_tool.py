@@ -19,7 +19,10 @@ class DetectLeadCaptureReadinessArgs(BaseModel):
 
 class DetectLeadCaptureReadinessTool(BaseTool):
     name: str = "detect_lead_capture_readiness"
-    description: str = "Detect if a lead has enough context and evidence to be registered in kaax internal CRM."
+    description: str = (
+        "Detect if a lead is ready for contact capture using a minimal policy: "
+        "name, phone, and preferred contact schedule."
+    )
     args_schema: Optional[ArgsSchema] = DetectLeadCaptureReadinessArgs
     return_direct: bool = False
 
@@ -29,49 +32,62 @@ class DetectLeadCaptureReadinessTool(BaseTool):
         crm_context = self._as_dict(payload.get("crm_context"))
         agent_limits = self._as_dict(payload.get("agent_limits"))
         lead_data = self._as_dict(payload.get("lead_data"))
+        normalized_lead_data = dict(lead_data)
 
         missing_critical_fields: list[str] = []
 
-        if self._is_missing(lead_data.get("need")) and self._is_missing(lead_data.get("pain_point")):
-            missing_critical_fields.append("lead_data.need_or_pain_point")
-        if self._is_missing(lead_data.get("timeline")):
-            missing_critical_fields.append("lead_data.timeline")
-        if self._is_missing(lead_data.get("buying_intent")):
-            missing_critical_fields.append("lead_data.buying_intent")
+        contact_name = self._first_present(
+            lead_data,
+            "contact_name",
+            "name",
+            "nombre",
+        )
+        phone = self._first_present(
+            lead_data,
+            "phone",
+            "telefono",
+            "phone_number",
+            "numero",
+            "numero_telefono",
+            "whatsapp_number",
+        )
+        contact_schedule = self._first_present(
+            lead_data,
+            "contact_schedule",
+            "horario",
+            "horario_contacto",
+            "best_time",
+            "best_time_to_contact",
+            "availability",
+            "disponibilidad",
+        )
 
-        if all(
-            self._is_missing(lead_data.get(field))
-            for field in ("email", "phone", "contact_name", "company")
-        ):
-            missing_critical_fields.append("lead_data.contact_identifier")
+        if self._is_missing(contact_name):
+            missing_critical_fields.append("lead_data.contact_name")
+        else:
+            normalized_lead_data["contact_name"] = str(contact_name).strip()
 
-        required_fields = crm_context.get("required_fields")
-        if isinstance(required_fields, list):
-            for field in required_fields:
-                field_name = str(field).strip()
-                if field_name and self._is_missing(lead_data.get(field_name)):
-                    missing_critical_fields.append(f"lead_data.{field_name}")
+        if self._is_missing(phone):
+            missing_critical_fields.append("lead_data.phone")
+        else:
+            normalized_lead_data["phone"] = str(phone).strip()
+
+        if self._is_missing(contact_schedule):
+            missing_critical_fields.append("lead_data.contact_schedule")
+        else:
+            normalized_lead_data["contact_schedule"] = str(contact_schedule).strip()
 
         disqualify_reason = lead_data.get("disqualify_reason")
         out_of_scope = bool(lead_data.get("out_of_scope"))
         is_disqualified = out_of_scope or not self._is_missing(disqualify_reason)
-        buying_intent_value = str(lead_data.get("buying_intent", "")).strip().lower()
-        has_commercial_intent = buying_intent_value in {"alta", "media", "high", "medium"}
-
-        qualification_evidence = self._build_qualification_evidence(lead_data)
+        qualification_evidence = self._build_qualification_evidence(normalized_lead_data)
         if is_disqualified:
             if not self._is_missing(disqualify_reason):
                 qualification_evidence.append(f"disqualify_reason: {disqualify_reason}")
             if out_of_scope:
                 qualification_evidence.append("out_of_scope: true")
-        elif buying_intent_value:
-            qualification_evidence.append(f"intent_signal: {buying_intent_value}")
 
         if is_disqualified:
-            lead_status = "no_calificado"
-            next_action = "cierre_cordial"
-            ready_for_capture = False
-        elif not self._is_missing(lead_data.get("buying_intent")) and not has_commercial_intent:
             lead_status = "no_calificado"
             next_action = "cierre_cordial"
             ready_for_capture = False
@@ -81,11 +97,7 @@ class DetectLeadCaptureReadinessTool(BaseTool):
             ready_for_capture = False
         else:
             lead_status = "calificado"
-            needs_handoff = any(
-                bool(lead_data.get(flag))
-                for flag in ("high_value_opportunity", "policy_sensitive", "unresolved_tool_failures")
-            )
-            next_action = "handoff_humano" if needs_handoff else "registro_crm"
+            next_action = "registro_crm"
             ready_for_capture = True
 
         if not qualification_evidence:
@@ -96,7 +108,7 @@ class DetectLeadCaptureReadinessTool(BaseTool):
             "whatsapp_context": whatsapp_context,
             "crm_context": crm_context,
             "agent_limits": agent_limits,
-            "lead_data": lead_data,
+            "lead_data": normalized_lead_data,
             "lead_status": lead_status,
             "qualification_evidence": qualification_evidence,
             "next_action": next_action,
@@ -162,13 +174,9 @@ class DetectLeadCaptureReadinessTool(BaseTool):
     def _build_qualification_evidence(lead_data: dict[str, Any]) -> list[str]:
         evidence: list[str] = []
         for field in (
-            "pain_point",
-            "need",
-            "timeline",
-            "buying_intent",
-            "decision_role",
-            "budget",
-            "company",
+            "contact_name",
+            "phone",
+            "contact_schedule",
         ):
             value = lead_data.get(field)
             if value is None:
@@ -177,3 +185,11 @@ class DetectLeadCaptureReadinessTool(BaseTool):
                 continue
             evidence.append(f"{field}: {value}")
         return evidence
+
+    @staticmethod
+    def _first_present(data: dict[str, Any], *keys: str) -> Any:
+        for key in keys:
+            value = data.get(key)
+            if not DetectLeadCaptureReadinessTool._is_missing(value):
+                return value
+        return None
