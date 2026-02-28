@@ -159,7 +159,6 @@ def build_agent_graph(
                 region_name=aws_region,
                 temperature=0,
                 disable_streaming=True,
-                reasoning=False
             )
             configured_middleware.append(
                 SummarizationMiddleware(
