@@ -84,6 +84,21 @@ class CaptureLeadIfReadyInput(BaseModel):
     notify_owner: bool = False
 
 
+class KnowledgeSearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class KnowledgeLearnInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_text: str = Field(min_length=1, max_length=3000)
+    confirm: bool = False
+    topic_hint: str | None = Field(default=None, min_length=1)
+
+
 class ErrorOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -191,6 +206,38 @@ class CaptureLeadIfReadyOutputSuccess(BaseModel):
     structured_payload: dict[str, object]
 
 
+class KnowledgeMatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str
+    content: str
+    score: float = Field(ge=0)
+    updated_at: str
+
+
+class KnowledgeSearchOutputSuccess(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    matches: list[KnowledgeMatchItem]
+
+
+class KnowledgeLearnOutputSuccess(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal[
+        "learned",
+        "needs_confirmation",
+        "ignored_not_instruction",
+        "unauthorized",
+        "error",
+    ]
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    topic: str | None = None
+    knowledge_id: str | None = None
+    message: str = Field(min_length=1)
+    pending: bool = False
+
+
 _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "get_iso_country_code": IsoInput,
     "retrieve_markets": MarketsInput,
@@ -201,6 +248,8 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "crm_upsert_quote": CrmUpsertQuoteInput,
     "detect_lead_capture_readiness": DetectLeadCaptureReadinessInput,
     "capture_lead_if_ready": CaptureLeadIfReadyInput,
+    "knowledge_search": KnowledgeSearchInput,
+    "knowledge_learn": KnowledgeLearnInput,
 }
 
 _OUTPUT_ADAPTERS: dict[str, TypeAdapter[Any]] = {
@@ -213,6 +262,8 @@ _OUTPUT_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "crm_upsert_quote": TypeAdapter(CrmUpsertOutputSuccess | ErrorOutput),
     "detect_lead_capture_readiness": TypeAdapter(LeadCaptureReadinessOutputSuccess | ErrorOutput),
     "capture_lead_if_ready": TypeAdapter(CaptureLeadIfReadyOutputSuccess | ErrorOutput),
+    "knowledge_search": TypeAdapter(KnowledgeSearchOutputSuccess | ErrorOutput),
+    "knowledge_learn": TypeAdapter(KnowledgeLearnOutputSuccess | ErrorOutput),
 }
 
 

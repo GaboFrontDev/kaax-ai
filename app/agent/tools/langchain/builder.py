@@ -7,6 +7,8 @@ from app.agent.tools.langchain.crm_upsert_quote_tool import CrmUpsertQuoteLangCh
 from app.agent.tools.langchain.detect_lead_capture_readiness_tool import (
     DetectLeadCaptureReadinessLangChainTool,
 )
+from app.agent.tools.langchain.knowledge_learn_tool import KnowledgeLearnLangChainTool
+from app.agent.tools.langchain.knowledge_search_tool import KnowledgeSearchLangChainTool
 from app.agent.tools.registry import ToolRegistry
 
 
@@ -15,4 +17,6 @@ def build_langchain_tools(tool_registry: ToolRegistry) -> list[Any]:
         CrmUpsertQuoteLangChainTool(tool_registry=tool_registry),
         DetectLeadCaptureReadinessLangChainTool(tool_registry=tool_registry),
         CaptureLeadIfReadyLangChainTool(tool_registry=tool_registry),
+        KnowledgeSearchLangChainTool(tool_registry=tool_registry),
+        KnowledgeLearnLangChainTool(tool_registry=tool_registry),
     ]

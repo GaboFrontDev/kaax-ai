@@ -258,68 +258,73 @@ class LangChainAgentRuntime:
 
         try:
             async with self._session_manager.session_lock(req.thread_id):
-                if req.attachments:
-                    await self._attachment_store.put(req.thread_id, req.attachments)
+                async with self._tool_registry.request_context(
+                    thread_id=req.thread_id,
+                    requestor=req.requestor,
+                ):
+                    if req.attachments:
+                        await self._attachment_store.put(req.thread_id, req.attachments)
 
-                user_text = self._sanitizer.sanitize(req.user_text)
-                logger.info("langchain_runtime_inbound thread_id=%s text=%s", req.thread_id, user_text[:300])
-                self._track_user_message(req.thread_id, user_text)
-                if (
-                    lead_response := await self._maybe_handle_explicit_lead_capture(
+                    user_text = self._sanitizer.sanitize(req.user_text)
+                    logger.info("langchain_runtime_inbound thread_id=%s text=%s", req.thread_id, user_text[:300])
+                    self._track_user_message(req.thread_id, user_text)
+                    if (
+                        lead_response := await self._maybe_handle_explicit_lead_capture(
+                            thread_id=req.thread_id,
+                            user_text=user_text,
+                        )
+                    ) is not None:
+                        attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
+                        return {
+                            "response": lead_response["response"],
+                            "tools_used": lead_response["tools_used"],
+                            "completion_time": round(time.perf_counter() - started_at, 3),
+                            "conversation_id": req.thread_id,
+                            "run_id": run_id,
+                            "attachments": attachments,
+                        }
+
+                    first_turn = self._mark_and_check_first_turn(req.thread_id)
+                    routing = await self._route_intent(user_text)
+                    if routing.route != "in_scope":
+                        answer = build_routing_response(
+                            routing,
+                            first_turn_greeting=first_turn and is_greeting_message(user_text),
+                        )
+                        attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
+                        return {
+                            "response": answer,
+                            "tools_used": [],
+                            "completion_time": round(time.perf_counter() - started_at, 3),
+                            "conversation_id": req.thread_id,
+                            "run_id": run_id,
+                            "attachments": attachments,
+                        }
+
+                    graph = await self._get_graph()
+                    model_user_text, prefetch_tools = await self._build_prompt_with_knowledge(user_text)
+
+                    result = await graph.ainvoke(
+                        {"messages": [{"role": "user", "content": model_user_text}]},
+                        config={"configurable": {"thread_id": req.thread_id}},
+                    )
+                    answer = _extract_response_text(result)
+                    if not answer:
+                        answer = "No se generó respuesta del modelo."
+                    auto_capture_tools: list[str] = []
+                    auto_capture_response = await self._maybe_auto_capture_lead(
                         thread_id=req.thread_id,
                         user_text=user_text,
                     )
-                ) is not None:
+                    if auto_capture_response is not None:
+                        answer = f"{answer}\n\n{auto_capture_response['response']}".strip()
+                        auto_capture_tools = auto_capture_response["tools_used"]
+
                     attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
-                    return {
-                        "response": lead_response["response"],
-                        "tools_used": lead_response["tools_used"],
-                        "completion_time": round(time.perf_counter() - started_at, 3),
-                        "conversation_id": req.thread_id,
-                        "run_id": run_id,
-                        "attachments": attachments,
-                    }
-
-                first_turn = self._mark_and_check_first_turn(req.thread_id)
-                routing = await self._route_intent(user_text)
-                if routing.route != "in_scope":
-                    answer = build_routing_response(
-                        routing,
-                        first_turn_greeting=first_turn and is_greeting_message(user_text),
-                    )
-                    attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
-                    return {
-                        "response": answer,
-                        "tools_used": [],
-                        "completion_time": round(time.perf_counter() - started_at, 3),
-                        "conversation_id": req.thread_id,
-                        "run_id": run_id,
-                        "attachments": attachments,
-                    }
-
-                graph = await self._get_graph()
-
-                result = await graph.ainvoke(
-                    {"messages": [{"role": "user", "content": user_text}]},
-                    config={"configurable": {"thread_id": req.thread_id}},
-                )
-                answer = _extract_response_text(result)
-                if not answer:
-                    answer = "No se generó respuesta del modelo."
-                auto_capture_tools: list[str] = []
-                auto_capture_response = await self._maybe_auto_capture_lead(
-                    thread_id=req.thread_id,
-                    user_text=user_text,
-                )
-                if auto_capture_response is not None:
-                    answer = f"{answer}\n\n{auto_capture_response['response']}".strip()
-                    auto_capture_tools = auto_capture_response["tools_used"]
-
-                attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
 
             return {
                 "response": answer,
-                "tools_used": self._extract_tools_used(result) + auto_capture_tools,
+                "tools_used": self._dedupe_tools(prefetch_tools + self._extract_tools_used(result) + auto_capture_tools),
                 "completion_time": round(time.perf_counter() - started_at, 3),
                 "conversation_id": req.thread_id,
                 "run_id": run_id,
@@ -334,183 +339,204 @@ class LangChainAgentRuntime:
 
         try:
             async with self._session_manager.session_lock(req.thread_id):
-                if req.attachments:
-                    await self._attachment_store.put(req.thread_id, req.attachments)
+                async with self._tool_registry.request_context(
+                    thread_id=req.thread_id,
+                    requestor=req.requestor,
+                ):
+                    if req.attachments:
+                        await self._attachment_store.put(req.thread_id, req.attachments)
 
-                user_text = self._sanitizer.sanitize(req.user_text)
-                logger.info("langchain_runtime_inbound_stream thread_id=%s text=%s", req.thread_id, user_text[:300])
-                self._track_user_message(req.thread_id, user_text)
-                if (
-                    lead_response := await self._maybe_handle_explicit_lead_capture(
+                    user_text = self._sanitizer.sanitize(req.user_text)
+                    logger.info("langchain_runtime_inbound_stream thread_id=%s text=%s", req.thread_id, user_text[:300])
+                    self._track_user_message(req.thread_id, user_text)
+                    if (
+                        lead_response := await self._maybe_handle_explicit_lead_capture(
+                            thread_id=req.thread_id,
+                            user_text=user_text,
+                        )
+                    ) is not None:
+                        for tool_name in lead_response["tools_used"]:
+                            yield StreamingEvent(
+                                type="tool_start",
+                                tool=tool_name,
+                                payload={"source": "lead_capture_fast_path"},
+                                thread_id=req.thread_id,
+                                run_id=run_id,
+                            )
+                            yield StreamingEvent(
+                                type="tool_result",
+                                tool=tool_name,
+                                payload={"status": "done"},
+                                thread_id=req.thread_id,
+                                run_id=run_id,
+                            )
+                        for chunk in self._chunk_text(lead_response["response"]):
+                            yield StreamingEvent(
+                                type="content",
+                                content=chunk,
+                                thread_id=req.thread_id,
+                                run_id=run_id,
+                            )
+                        attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
+                        yield StreamingEvent(
+                            type="complete",
+                            payload={
+                                "tools_used": lead_response["tools_used"],
+                                "attachments": attachments,
+                            },
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+                        return
+
+                    first_turn = self._mark_and_check_first_turn(req.thread_id)
+                    routing = await self._route_intent(user_text)
+
+                    if routing.route != "in_scope":
+                        answer = build_routing_response(
+                            routing,
+                            first_turn_greeting=first_turn and is_greeting_message(user_text),
+                        )
+                        for chunk in self._chunk_text(answer):
+                            yield StreamingEvent(
+                                type="content",
+                                content=chunk,
+                                thread_id=req.thread_id,
+                                run_id=run_id,
+                            )
+                        attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
+                        yield StreamingEvent(
+                            type="complete",
+                            payload={
+                                "tools_used": [],
+                                "attachments": attachments,
+                            },
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+                        return
+
+                    graph = await self._get_graph()
+                    model_user_text, prefetch_tools = await self._build_prompt_with_knowledge(user_text)
+
+                    chunks: list[str] = []
+                    tools_used: list[str] = list(prefetch_tools)
+                    final_output: Any = None
+                    thinking_filter = _ThinkingStreamFilter()
+
+                    for tool_name in prefetch_tools:
+                        yield StreamingEvent(
+                            type="tool_start",
+                            tool=tool_name,
+                            payload={"source": "knowledge_prefetch"},
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+                        yield StreamingEvent(
+                            type="tool_result",
+                            tool=tool_name,
+                            payload={"status": "done"},
+                            thread_id=req.thread_id,
+                            run_id=run_id,
+                        )
+
+                    async for event in graph.astream_events(
+                        {"messages": [{"role": "user", "content": model_user_text}]},
+                        config={"configurable": {"thread_id": req.thread_id}},
+                        version="v2",
+                    ):
+                        event_name = str(event.get("event", ""))
+                        data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+
+                        if event_name == "on_chat_model_stream":
+                            text = _content_to_text(data.get("chunk"))
+                            if text:
+                                visible = thinking_filter.feed(text)
+                                if visible:
+                                    chunks.append(visible)
+                                    yield StreamingEvent(
+                                        type="content",
+                                        content=visible,
+                                        thread_id=req.thread_id,
+                                        run_id=run_id,
+                                    )
+                        elif event_name == "on_tool_start":
+                            tool_name = str(event.get("name", "tool"))
+                            if tool_name not in tools_used:
+                                tools_used.append(tool_name)
+                            yield StreamingEvent(
+                                type="tool_start",
+                                tool=tool_name,
+                                payload=data.get("input") if isinstance(data.get("input"), dict) else {"input": data.get("input")},
+                                thread_id=req.thread_id,
+                                run_id=run_id,
+                            )
+                        elif event_name == "on_tool_end":
+                            tool_name = str(event.get("name", "tool"))
+                            output = data.get("output")
+                            payload = output if isinstance(output, dict) else {"output": output}
+                            yield StreamingEvent(
+                                type="tool_result",
+                                tool=tool_name,
+                                payload=payload,
+                                thread_id=req.thread_id,
+                                run_id=run_id,
+                            )
+                        elif event_name == "on_chain_end" and "output" in data:
+                            final_output = data.get("output")
+
+                    answer = "".join(chunks).strip()
+                    if not answer and final_output is not None:
+                        answer = _extract_response_text(final_output)
+                    else:
+                        tail = thinking_filter.finish()
+                        if tail:
+                            cleaned_tail = _strip_thinking_tags(tail)
+                            if cleaned_tail:
+                                answer = f"{answer}{cleaned_tail}".strip()
+                    if not answer:
+                        answer = "No se generó respuesta del modelo."
+
+                    auto_capture_response = await self._maybe_auto_capture_lead(
                         thread_id=req.thread_id,
                         user_text=user_text,
                     )
-                ) is not None:
-                    for tool_name in lead_response["tools_used"]:
-                        yield StreamingEvent(
-                            type="tool_start",
-                            tool=tool_name,
-                            payload={"source": "lead_capture_fast_path"},
-                            thread_id=req.thread_id,
-                            run_id=run_id,
-                        )
-                        yield StreamingEvent(
-                            type="tool_result",
-                            tool=tool_name,
-                            payload={"status": "done"},
-                            thread_id=req.thread_id,
-                            run_id=run_id,
-                        )
-                    for chunk in self._chunk_text(lead_response["response"]):
-                        yield StreamingEvent(
-                            type="content",
-                            content=chunk,
-                            thread_id=req.thread_id,
-                            run_id=run_id,
-                        )
+                    if auto_capture_response is not None:
+                        for tool_name in auto_capture_response["tools_used"]:
+                            if tool_name not in tools_used:
+                                tools_used.append(tool_name)
+                            yield StreamingEvent(
+                                type="tool_start",
+                                tool=tool_name,
+                                payload={"source": "lead_capture_auto"},
+                                thread_id=req.thread_id,
+                                run_id=run_id,
+                            )
+                            yield StreamingEvent(
+                                type="tool_result",
+                                tool=tool_name,
+                                payload={"status": "done"},
+                                thread_id=req.thread_id,
+                                run_id=run_id,
+                            )
+                        for chunk in self._chunk_text(auto_capture_response["response"]):
+                            yield StreamingEvent(
+                                type="content",
+                                content=chunk,
+                                thread_id=req.thread_id,
+                                run_id=run_id,
+                            )
+
                     attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
                     yield StreamingEvent(
                         type="complete",
                         payload={
-                            "tools_used": lead_response["tools_used"],
+                            "tools_used": self._dedupe_tools(tools_used),
                             "attachments": attachments,
                         },
                         thread_id=req.thread_id,
                         run_id=run_id,
                     )
-                    return
-
-                first_turn = self._mark_and_check_first_turn(req.thread_id)
-                routing = await self._route_intent(user_text)
-
-                if routing.route != "in_scope":
-                    answer = build_routing_response(
-                        routing,
-                        first_turn_greeting=first_turn and is_greeting_message(user_text),
-                    )
-                    for chunk in self._chunk_text(answer):
-                        yield StreamingEvent(
-                            type="content",
-                            content=chunk,
-                            thread_id=req.thread_id,
-                            run_id=run_id,
-                        )
-                    attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
-                    yield StreamingEvent(
-                        type="complete",
-                        payload={
-                            "tools_used": [],
-                            "attachments": attachments,
-                        },
-                        thread_id=req.thread_id,
-                        run_id=run_id,
-                    )
-                    return
-
-                graph = await self._get_graph()
-
-                chunks: list[str] = []
-                tools_used: list[str] = []
-                final_output: Any = None
-                thinking_filter = _ThinkingStreamFilter()
-
-                async for event in graph.astream_events(
-                    {"messages": [{"role": "user", "content": user_text}]},
-                    config={"configurable": {"thread_id": req.thread_id}},
-                    version="v2",
-                ):
-                    event_name = str(event.get("event", ""))
-                    data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
-
-                    if event_name == "on_chat_model_stream":
-                        text = _content_to_text(data.get("chunk"))
-                        if text:
-                            visible = thinking_filter.feed(text)
-                            if visible:
-                                chunks.append(visible)
-                                yield StreamingEvent(
-                                    type="content",
-                                    content=visible,
-                                    thread_id=req.thread_id,
-                                    run_id=run_id,
-                                )
-                    elif event_name == "on_tool_start":
-                        tool_name = str(event.get("name", "tool"))
-                        if tool_name not in tools_used:
-                            tools_used.append(tool_name)
-                        yield StreamingEvent(
-                            type="tool_start",
-                            tool=tool_name,
-                            payload=data.get("input") if isinstance(data.get("input"), dict) else {"input": data.get("input")},
-                            thread_id=req.thread_id,
-                            run_id=run_id,
-                        )
-                    elif event_name == "on_tool_end":
-                        tool_name = str(event.get("name", "tool"))
-                        output = data.get("output")
-                        payload = output if isinstance(output, dict) else {"output": output}
-                        yield StreamingEvent(
-                            type="tool_result",
-                            tool=tool_name,
-                            payload=payload,
-                            thread_id=req.thread_id,
-                            run_id=run_id,
-                        )
-                    elif event_name == "on_chain_end" and "output" in data:
-                        final_output = data.get("output")
-
-                answer = "".join(chunks).strip()
-                if not answer and final_output is not None:
-                    answer = _extract_response_text(final_output)
-                else:
-                    tail = thinking_filter.finish()
-                    if tail:
-                        cleaned_tail = _strip_thinking_tags(tail)
-                        if cleaned_tail:
-                            answer = f"{answer}{cleaned_tail}".strip()
-                if not answer:
-                    answer = "No se generó respuesta del modelo."
-
-                auto_capture_response = await self._maybe_auto_capture_lead(
-                    thread_id=req.thread_id,
-                    user_text=user_text,
-                )
-                if auto_capture_response is not None:
-                    for tool_name in auto_capture_response["tools_used"]:
-                        if tool_name not in tools_used:
-                            tools_used.append(tool_name)
-                        yield StreamingEvent(
-                            type="tool_start",
-                            tool=tool_name,
-                            payload={"source": "lead_capture_auto"},
-                            thread_id=req.thread_id,
-                            run_id=run_id,
-                        )
-                        yield StreamingEvent(
-                            type="tool_result",
-                            tool=tool_name,
-                            payload={"status": "done"},
-                            thread_id=req.thread_id,
-                            run_id=run_id,
-                        )
-                    for chunk in self._chunk_text(auto_capture_response["response"]):
-                        yield StreamingEvent(
-                            type="content",
-                            content=chunk,
-                            thread_id=req.thread_id,
-                            run_id=run_id,
-                        )
-
-                attachments = await self._attachment_store.get_recent(req.thread_id, limit=20)
-                yield StreamingEvent(
-                    type="complete",
-                    payload={
-                        "tools_used": tools_used,
-                        "attachments": attachments,
-                    },
-                    thread_id=req.thread_id,
-                    run_id=run_id,
-                )
         except SessionBusyError as exc:
             yield StreamingEvent(
                 type="error",
@@ -523,15 +549,39 @@ class LangChainAgentRuntime:
 
     async def _route_intent(self, user_text: str) -> IntentDecision:
         if not self._llm_intent_router_enabled:
-            return IntentDecision(route="in_scope", confidence=1.0, reason="intent_router_disabled")
+            decision = IntentDecision(route="in_scope", confidence=1.0, reason="intent_router_disabled")
+            logger.info(
+                "intent_routing_decision intent=%s confidence=%.3f actionable=%s reason=%s",
+                decision.route,
+                decision.confidence,
+                decision.route == "in_scope",
+                decision.reason,
+            )
+            return decision
 
         router = await self._get_llm_intent_router()
         if router is None:
-            return IntentDecision(route="in_scope", confidence=0.0, reason="intent_router_unavailable")
+            decision = IntentDecision(route="in_scope", confidence=0.0, reason="intent_router_unavailable")
+            logger.info(
+                "intent_routing_decision intent=%s confidence=%.3f actionable=%s reason=%s",
+                decision.route,
+                decision.confidence,
+                decision.route == "in_scope",
+                decision.reason,
+            )
+            return decision
 
         decision = await router.route(user_text)
         if decision.reason == "llm_router_failed":
-            return IntentDecision(route="in_scope", confidence=0.0, reason="intent_router_failed_open")
+            decision = IntentDecision(route="in_scope", confidence=0.0, reason="intent_router_failed_open")
+
+        logger.info(
+            "intent_routing_decision intent=%s confidence=%.3f actionable=%s reason=%s",
+            decision.route,
+            decision.confidence,
+            decision.route == "in_scope",
+            decision.reason,
+        )
         return decision
 
     async def _maybe_handle_explicit_lead_capture(
@@ -655,6 +705,75 @@ class LangChainAgentRuntime:
             self._llm_intent_router_init_failed = True
             logger.warning("llm_intent_router_unavailable_fallback_keywords: %s", exc)
             return None
+
+    async def _build_prompt_with_knowledge(self, user_text: str) -> tuple[str, list[str]]:
+        if not self._should_use_knowledge_search(user_text):
+            return user_text, []
+
+        result = await self._tool_registry.execute("knowledge_search", {"query": user_text, "limit": 5})
+        matches = result.output.get("matches", []) if isinstance(result.output, dict) else []
+        if not isinstance(matches, list) or not matches:
+            return user_text, [result.tool]
+
+        context_lines: list[str] = []
+        for item in matches[:3]:
+            if not isinstance(item, dict):
+                continue
+            topic = str(item.get("topic") or "").strip()
+            content = str(item.get("content") or "").strip()
+            if not topic or not content:
+                continue
+            context_lines.append(f"- Tema: {topic}\n  Dato: {content}")
+
+        if not context_lines:
+            return user_text, [result.tool]
+
+        knowledge_context = "\n".join(context_lines)
+        augmented = (
+            f"{user_text}\n\n"
+            "[CONTEXTO_INTERNO_KB]\n"
+            f"{knowledge_context}\n"
+            "[/CONTEXTO_INTERNO_KB]\n"
+            "Usa este contexto como fuente prioritaria para responder con precision. "
+            "No menciones etiquetas internas ni IDs."
+        )
+        return augmented, [result.tool]
+
+    @staticmethod
+    def _should_use_knowledge_search(user_text: str) -> bool:
+        text = user_text.strip().lower()
+        if not text:
+            return False
+
+        if len(text) <= 2:
+            return False
+
+        if "?" in text or text.startswith("que ") or text.startswith("como ") or text.startswith("cual"):
+            return True
+
+        keywords = (
+            "producto",
+            "servicio",
+            "funciona",
+            "proceso",
+            "integracion",
+            "whatsapp",
+            "crm",
+            "precio",
+            "costo",
+            "inventario",
+            "disponibilidad",
+            "automatizacion",
+        )
+        return any(keyword in text for keyword in keywords)
+
+    @staticmethod
+    def _dedupe_tools(tools: list[str]) -> list[str]:
+        deduped: list[str] = []
+        for tool in tools:
+            if tool and tool not in deduped:
+                deduped.append(tool)
+        return deduped
 
     @staticmethod
     def _chunk_text(text: str, chunk_size: int = 80) -> list[str]:

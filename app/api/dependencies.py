@@ -12,6 +12,7 @@ from app.crm.providers import CRMProvider, InMemoryCRMProvider, PostgresCRMProvi
 from app.infra.db import DatabaseConfig, PostgresPoolManager, build_postgres_dsn
 from app.infra.redis import RedisSentinelConfig, RedisSentinelManager, parse_sentinel_nodes
 from app.infra.settings import Settings, get_settings
+from app.knowledge.providers import InMemoryKnowledgeProvider, KnowledgeProvider, PostgresKnowledgeProvider
 from app.memory.attachments_store import AttachmentStore, InMemoryAttachmentStore, RedisAttachmentStore
 from app.memory.checkpoint_store import CheckpointStore, InMemoryCheckpointStore, PostgresCheckpointStore
 from app.memory.cleanup import CleanupWorker
@@ -87,6 +88,41 @@ def get_crm_pool_manager() -> PostgresPoolManager | None:
         )
     except Exception:
         logger.exception("crm_postgres_dsn_build_failed_falling_back_memory")
+        return None
+
+    config = DatabaseConfig(
+        dsn=dsn,
+        min_pool_size=settings.db_pool_min_size,
+        max_pool_size=settings.db_pool_max_size,
+        command_timeout_seconds=settings.db_command_timeout_seconds,
+    )
+    return PostgresPoolManager(config)
+
+
+@lru_cache
+def get_knowledge_pool_manager() -> PostgresPoolManager | None:
+    settings = get_settings()
+    if settings.knowledge_backend.lower() != "postgres":
+        return None
+
+    try:
+        import asyncpg  # noqa: F401
+    except ImportError:
+        logger.warning("asyncpg_not_installed_for_knowledge_backend_falling_back_memory")
+        return None
+
+    try:
+        dsn = build_postgres_dsn(
+            db_dsn=settings.db_dsn,
+            user=settings.db_user,
+            password=settings.db_password,
+            host=settings.db_host,
+            port=settings.db_port,
+            db_name=settings.db_name,
+            ssl_mode=settings.db_ssl_mode,
+        )
+    except Exception:
+        logger.exception("knowledge_postgres_dsn_build_failed_falling_back_memory")
         return None
 
     config = DatabaseConfig(
@@ -219,11 +255,18 @@ def get_tool_registry() -> ToolRegistry:
     settings = get_settings()
     return ToolRegistry(
         crm_provider=get_crm_provider(),
+        knowledge_provider=get_knowledge_provider(),
         owner_notify_enabled=settings.lead_owner_notify_enabled,
         owner_whatsapp_number=settings.lead_owner_whatsapp_number,
         owner_phone_number_id=settings.whatsapp_meta_owner_phone_number_id,
         whatsapp_meta_access_token=settings.whatsapp_meta_access_token,
         whatsapp_meta_api_version=settings.whatsapp_meta_api_version,
+        knowledge_admin_requestors=settings.knowledge_admin_requestors,
+        knowledge_search_default_limit=settings.knowledge_search_default_limit,
+        knowledge_learn_confidence_threshold=settings.knowledge_learn_confidence_threshold,
+        knowledge_learn_detector_model_name=settings.small_model_name,
+        knowledge_learn_detector_region=settings.aws_region,
+        agent_id=settings.agent_id,
     )
 
 
@@ -236,6 +279,17 @@ def get_crm_provider() -> CRMProvider:
             return PostgresCRMProvider(pool_manager, table_name=settings.crm_table_name)
         logger.warning("crm_postgres_backend_requested_but_unavailable_falling_back_memory")
     return InMemoryCRMProvider()
+
+
+@lru_cache
+def get_knowledge_provider() -> KnowledgeProvider:
+    settings = get_settings()
+    if settings.knowledge_backend.lower() == "postgres":
+        pool_manager = get_knowledge_pool_manager()
+        if pool_manager is not None:
+            return PostgresKnowledgeProvider(pool_manager, table_name=settings.knowledge_table_name)
+        logger.warning("knowledge_postgres_backend_requested_but_unavailable_falling_back_memory")
+    return InMemoryKnowledgeProvider()
 
 
 @lru_cache

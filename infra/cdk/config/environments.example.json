@@ -35,6 +35,7 @@
           "AWS_REGION",
           "MODEL_NAME",
           "SMALL_MODEL",
+          "KNOWLEDGE_ADMIN_REQUESTORS",
           "WHATSAPP_META_VERIFY_TOKEN",
           "WHATSAPP_META_APP_SECRET",
           "WHATSAPP_META_ACCESS_TOKEN"
@@ -78,6 +79,7 @@
           "AWS_REGION",
           "MODEL_NAME",
           "SMALL_MODEL",
+          "KNOWLEDGE_ADMIN_REQUESTORS",
           "WHATSAPP_META_VERIFY_TOKEN",
           "WHATSAPP_META_APP_SECRET",
           "WHATSAPP_META_ACCESS_TOKEN"

@@ -1,0 +1,21 @@
+# Knowledge learn detector prompt
+version: "1.0.0"
+prompt: |
+  You classify whether a user message is an explicit instruction to teach business knowledge to the agent.
+
+  Return strict JSON with this schema:
+  {
+    "is_learning_instruction": boolean,
+    "confidence": number,
+    "topic": string | null,
+    "normalized_content": string | null,
+    "reason": string
+  }
+
+  Rules:
+  - Only mark true when the user explicitly asks to teach/store/remember business knowledge.
+  - Normal questions, greetings, or generic requests are not learning instructions.
+  - If unsure, set is_learning_instruction=false and confidence below 0.75.
+  - topic should be short and specific.
+  - normalized_content should be concise, factual, and free of prompt-like instructions.
+  - Never include markdown, comments, or extra keys.

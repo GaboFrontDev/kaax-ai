@@ -10,6 +10,7 @@ from app.api.dependencies import (
     get_crm_pool_manager,
     get_cleanup_worker,
     get_interaction_metrics_store,
+    get_knowledge_pool_manager,
     get_langgraph_checkpointer_manager,
     get_postgres_pool_manager,
     get_redis_manager,
@@ -61,6 +62,9 @@ async def lifespan(_: FastAPI):
         crm_pool_manager = get_crm_pool_manager()
         if crm_pool_manager is not None:
             await crm_pool_manager.close()
+        knowledge_pool_manager = get_knowledge_pool_manager()
+        if knowledge_pool_manager is not None:
+            await knowledge_pool_manager.close()
         langgraph_checkpointer_manager = get_langgraph_checkpointer_manager()
         if langgraph_checkpointer_manager is not None:
             await langgraph_checkpointer_manager.close()

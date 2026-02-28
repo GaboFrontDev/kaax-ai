@@ -72,6 +72,12 @@ class Settings:
     db_command_timeout_seconds: float
     crm_backend: str
     crm_table_name: str
+    knowledge_backend: str
+    knowledge_table_name: str
+    knowledge_admin_requestors: set[str]
+    knowledge_search_default_limit: int
+    knowledge_learn_confidence_threshold: float
+    agent_id: str
     interaction_metrics_backend: str
     interaction_metrics_table_name: str
     redis_master_name: str
@@ -141,6 +147,12 @@ class Settings:
             db_command_timeout_seconds=float(os.getenv("DB_COMMAND_TIMEOUT_SECONDS", "30")),
             crm_backend=os.getenv("CRM_BACKEND", "memory"),
             crm_table_name=os.getenv("CRM_TABLE_NAME", "crm_leads"),
+            knowledge_backend=os.getenv("KNOWLEDGE_BACKEND", "memory"),
+            knowledge_table_name=os.getenv("KNOWLEDGE_TABLE_NAME", "agent_knowledge"),
+            knowledge_admin_requestors=_split_csv(os.getenv("KNOWLEDGE_ADMIN_REQUESTORS")),
+            knowledge_search_default_limit=int(os.getenv("KNOWLEDGE_SEARCH_DEFAULT_LIMIT", "5")),
+            knowledge_learn_confidence_threshold=float(os.getenv("KNOWLEDGE_LEARN_CONFIDENCE_THRESHOLD", "0.75")),
+            agent_id=os.getenv("AGENT_ID", "default"),
             interaction_metrics_backend=os.getenv("INTERACTION_METRICS_BACKEND", "auto"),
             interaction_metrics_table_name=os.getenv("INTERACTION_METRICS_TABLE", "interaction_events"),
             redis_master_name=os.getenv("REDIS_MASTER_NAME", "mymaster"),
