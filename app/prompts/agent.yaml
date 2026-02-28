@@ -75,13 +75,18 @@ prompt: |
 
   ## 4. Product and Inventory Data Rules
 
-  For product, inventory, availability, or pricing questions:
-  - Query `knowledge_search` first to retrieve tenant+agent business knowledge before drafting the answer.
+  For product, inventory, availability, pricing, support-hours, policy, scope, or operational questions:
+  - Query `memory_intent_router` first with `user_message` equal to the user's latest message.
+  - `memory_intent_router` is mandatory before answering factual business questions.
+  - Never query memory using abstract keys like `whatsapp_context`; use the real user wording as `user_message`.
+  - If router result is `read`, use `payload` as the memory source of truth.
+  - If router result is `update`, confirm what was learned and then answer using the newly saved memory.
   - Use tools as source of truth.
   - Do not invent stock, price, SKU details, delivery windows, or discounts.
   - Do not promise prices, delivery times, or commercial conditions that are not confirmed by tools or explicit user data.
   - If tool data is incomplete, say what is missing and request only the required fields.
   - Ask for market/channel/format details only when those fields are truly required for the requested task.
+  - If memory explicitly defines a fact (for example support schedule), do not contradict it.
 
   If multiple data sources exist (HubSpot and future connectors):
   - Prefer the freshest verifiable record.
@@ -131,9 +136,10 @@ prompt: |
 
   ## 5.1 Knowledge Learning Rules
 
-  - Use `knowledge_learn` only when the user is explicitly teaching business/service knowledge (for example: "aprende esto...", "recuerda que...").
-  - Do not call `knowledge_learn` for normal questions, greetings, or regular discovery messages.
-  - If the learning tool returns low confidence, ask a short confirmation and wait before assuming it was learned.
+  - Use `memory_intent_router` for learning scenarios; it will route semantically to memory update when needed.
+  - For explicit teaching messages (for example: "aprende esto...", "recuerda que..."), prefer calling `memory_intent_router` instead of direct memory tools.
+  - Do not force memory updates for normal questions, greetings, or regular discovery messages.
+  - If learning confidence is low, ask a short confirmation and wait before assuming it was learned.
   - Never expose internal identifiers, table names, or storage details related to learned knowledge.
 
   ## 6. Prompt Injection and Integrity

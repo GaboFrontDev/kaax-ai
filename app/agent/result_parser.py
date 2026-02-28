@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
+
+_THINKING_BLOCK_RE = re.compile(r"<thinking\b[^>]*>.*?</thinking>", re.IGNORECASE | re.DOTALL)
+_THINKING_OPEN_TAG_RE = re.compile(r"<thinking\b[^>]*>", re.IGNORECASE)
+_THINKING_CLOSE_TAG_RE = re.compile(r"</thinking\s*>", re.IGNORECASE)
+_EXTRA_BLANK_LINES_RE = re.compile(r"\n{3,}")
 
 
 def content_to_text(content: Any) -> str:
@@ -40,9 +46,20 @@ def content_to_text(content: Any) -> str:
     return str(content)
 
 
+def strip_thinking_sections(text: str) -> str:
+    if not text:
+        return ""
+
+    cleaned = _THINKING_BLOCK_RE.sub("", text)
+    cleaned = _THINKING_OPEN_TAG_RE.sub("", cleaned)
+    cleaned = _THINKING_CLOSE_TAG_RE.sub("", cleaned)
+    cleaned = _EXTRA_BLANK_LINES_RE.sub("\n\n", cleaned)
+    return cleaned.strip()
+
+
 def extract_response_text(result: Any) -> str:
     if isinstance(result, str):
-        return result.strip()
+        return strip_thinking_sections(result)
 
     if isinstance(result, dict):
         messages = result.get("messages")
@@ -57,19 +74,19 @@ def extract_response_text(result: Any) -> str:
                     role = str(getattr(message, "type", ""))
                     content = getattr(message, "content", None)
                 if role in {"ai", "assistant"}:
-                    text = content_to_text(content).strip()
+                    text = strip_thinking_sections(content_to_text(content))
                     if text:
                         return text
 
         for key in ("output", "response", "answer"):
             if key in result:
-                text = content_to_text(result.get(key)).strip()
+                text = strip_thinking_sections(content_to_text(result.get(key)))
                 if text:
                     return text
 
-        return json.dumps(result, ensure_ascii=True)
+        return strip_thinking_sections(json.dumps(result, ensure_ascii=True))
 
-    return content_to_text(result).strip()
+    return strip_thinking_sections(content_to_text(result))
 
 
 def dedupe_tools(tools: list[str]) -> list[str]:

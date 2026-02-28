@@ -93,8 +93,6 @@ def build_tools(
         readiness_tool,
         capture_tool,
         memory_intent_tool,
-        knowledge_search_tool,
-        knowledge_learn_tool,
     ]
 
 
@@ -161,6 +159,7 @@ def build_agent_graph(
                 region_name=aws_region,
                 temperature=0,
                 disable_streaming=True,
+                reasoning=False
             )
             configured_middleware.append(
                 SummarizationMiddleware(

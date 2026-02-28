@@ -186,6 +186,7 @@ def build_memory_intent_tool(
             "If routed to read, it executes memory retrieval behavior (knowledge_search path). "
             "If routed to update, it executes memory learning behavior (knowledge_learn path), including confirmation context when provided. "
             "Output always includes: operation ('read' or 'update'), confidence (0..1), reason, and payload (result from the executed path). "
+            "When a user makes a question, ask yourself: is the user likely trying to retrieve/consult existing knowledge (read), or are they trying to teach/update knowledge (update)?. "
             "Use this tool before memory actions to keep routing explicit, auditable, and consistent."
         ),
         args_schema=MemoryIntentInput,

@@ -212,6 +212,11 @@ class KaaxServiceStack(Stack):
             "AGENT_RUNTIME_STRICT": "true",
         }
         default_env.update(config.environment)
+        # ECS rejects duplicated names across `environment` and `secrets`.
+        # When both are present, prefer Secrets Manager values.
+        overlapping_keys = set(default_env).intersection(secrets)
+        for key in overlapping_keys:
+            default_env.pop(key, None)
 
         # Runtime model ids can come from Secrets Manager, so we can't rely on synth-time env vars.
         # Grant invoke permissions broadly for Bedrock and tighten later if desired.
