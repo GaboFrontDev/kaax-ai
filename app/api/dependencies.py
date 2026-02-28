@@ -136,32 +136,8 @@ def get_knowledge_pool_manager() -> PostgresPoolManager | None:
 
 @lru_cache
 def get_langgraph_checkpointer_manager() -> LangGraphCheckpointerManager | None:
-    settings = get_settings()
-    if settings.agent_runtime_backend.lower() != "langchain":
-        return None
-    if settings.checkpoint_backend.lower() != "postgres":
-        return None
-
-    try:
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: F401
-    except ImportError as exc:
-        if settings.agent_runtime_strict:
-            raise RuntimeError(
-                "LangGraph native checkpoint requested but langgraph postgres checkpointer is unavailable"
-            ) from exc
-        logger.warning("langgraph_postgres_checkpointer_unavailable_falling_back_to_no_native_checkpoint")
-        return None
-
-    dsn = build_postgres_dsn(
-        db_dsn=settings.db_dsn,
-        user=settings.db_user,
-        password=settings.db_password,
-        host=settings.db_host,
-        port=settings.db_port,
-        db_name=settings.db_name,
-        ssl_mode=settings.db_ssl_mode,
-    )
-    return LangGraphCheckpointerManager(conn_string=dsn)
+    # Legacy create_agent checkpointer path was removed with the langgraph_mvp migration.
+    return None
 
 
 @lru_cache

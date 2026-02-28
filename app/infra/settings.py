@@ -160,7 +160,7 @@ class Settings:
                 if os.getenv("REDIS_MASTER_PORT_OVERRIDE")
                 else None
             ),
-            agent_runtime_backend=os.getenv("AGENT_RUNTIME_BACKEND", "langchain"),
+            agent_runtime_backend=os.getenv("AGENT_RUNTIME_BACKEND", "langgraph_mvp"),
             agent_runtime_strict=_bool_env("AGENT_RUNTIME_STRICT", False),
             model_name=os.getenv(
                 "MODEL_NAME",

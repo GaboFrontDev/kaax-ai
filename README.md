@@ -46,16 +46,10 @@ export REDIS_MASTER_HOST_OVERRIDE=127.0.0.1
 export REDIS_MASTER_PORT_OVERRIDE=56378
 ```
 
-Para runtime `create_agent` con AWS Bedrock:
+Para runtime de orquestación MVP (default):
 
 ```bash
-pip install -e .[dev,bedrock]
-export AGENT_RUNTIME_BACKEND=langchain
-export AGENT_RUNTIME_STRICT=true
-export AWS_REGION=us-east-1
-export MODEL_NAME=anthropic.claude-3-5-sonnet-20241022-v2:0
-export SMALL_MODEL=anthropic.claude-3-haiku-20240307-v1:0
-export MODEL_TEMPERATURE=0.5
+export AGENT_RUNTIME_BACKEND=langgraph_mvp
 ```
 
 Para UI local con Chainlit:
@@ -116,10 +110,8 @@ export WHATSAPP_META_API_VERSION=v21.0
 
 ## Runtime de agente
 
-- `AGENT_RUNTIME_BACKEND=stub` (default): runtime interno deterministico para scaffolding.
-- `AGENT_RUNTIME_BACKEND=langchain`: usa `langchain.agents.create_agent` con `ChatBedrockConverse`.
-- `AGENT_RUNTIME_STRICT=true`: falla startup si Bedrock/LangChain no inicializa (sin fallback silencioso).
-- Si `AGENT_RUNTIME_BACKEND=langchain` y `CHECKPOINT_BACKEND=postgres`, se activa checkpoint nativo de LangGraph (`AsyncPostgresSaver`) para memoria conversacional por `thread_id`.
+- `AGENT_RUNTIME_BACKEND=langgraph_mvp` (default): orquestacion deterministica por nodos (`supervisor_route -> agent -> persist -> finalize`).
+- El backend legacy `langchain/create_agent` fue retirado de este servicio.
 
 ## Logging
 

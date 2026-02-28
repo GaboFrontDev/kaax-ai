@@ -32,47 +32,7 @@ def _build_deps() -> tuple[
     return session_manager, attachments, crm_provider, knowledge_provider, context_manager
 
 
-def test_build_agent_raises_when_langchain_init_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    session_manager, attachments, crm_provider, knowledge_provider, context_manager = _build_deps()
-    monkeypatch.setattr(
-        factory_module,
-        "LangChainAgentRuntime",
-        lambda **_: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-
-    with pytest.raises(RuntimeError):
-        build_agent(
-            session_manager=session_manager,
-            attachment_store=attachments,
-            crm_provider=crm_provider,
-            knowledge_provider=knowledge_provider,
-            tool_context_manager=context_manager,
-            runtime_backend="langchain",
-            runtime_strict=False,
-        )
-
-
-def test_build_agent_langchain_strict_raises_when_init_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    session_manager, attachments, crm_provider, knowledge_provider, context_manager = _build_deps()
-    monkeypatch.setattr(
-        factory_module,
-        "LangChainAgentRuntime",
-        lambda **_: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-
-    with pytest.raises(RuntimeError):
-        build_agent(
-            session_manager=session_manager,
-            attachment_store=attachments,
-            crm_provider=crm_provider,
-            knowledge_provider=knowledge_provider,
-            tool_context_manager=context_manager,
-            runtime_backend="langchain",
-            runtime_strict=True,
-        )
-
-
-def test_build_agent_rejects_non_langchain_backend() -> None:
+def test_build_agent_rejects_legacy_backend() -> None:
     session_manager, attachments, crm_provider, knowledge_provider, context_manager = _build_deps()
 
     with pytest.raises(ValueError):
@@ -82,5 +42,38 @@ def test_build_agent_rejects_non_langchain_backend() -> None:
             crm_provider=crm_provider,
             knowledge_provider=knowledge_provider,
             tool_context_manager=context_manager,
-            runtime_backend="stub",
+            runtime_backend="langchain",
         )
+
+
+def test_build_agent_uses_langgraph_mvp_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    session_manager, attachments, crm_provider, knowledge_provider, context_manager = _build_deps()
+    sentinel_runtime = object()
+    monkeypatch.setattr(factory_module, "LangGraphMvpRuntime", lambda **_: sentinel_runtime)
+
+    runtime = build_agent(
+        session_manager=session_manager,
+        attachment_store=attachments,
+        crm_provider=crm_provider,
+        knowledge_provider=knowledge_provider,
+        tool_context_manager=context_manager,
+        runtime_backend="langgraph_mvp",
+    )
+
+    assert runtime is sentinel_runtime
+
+
+def test_build_agent_default_backend_is_langgraph_mvp(monkeypatch: pytest.MonkeyPatch) -> None:
+    session_manager, attachments, crm_provider, knowledge_provider, context_manager = _build_deps()
+    sentinel_runtime = object()
+    monkeypatch.setattr(factory_module, "LangGraphMvpRuntime", lambda **_: sentinel_runtime)
+
+    runtime = build_agent(
+        session_manager=session_manager,
+        attachment_store=attachments,
+        crm_provider=crm_provider,
+        knowledge_provider=knowledge_provider,
+        tool_context_manager=context_manager,
+    )
+
+    assert runtime is sentinel_runtime

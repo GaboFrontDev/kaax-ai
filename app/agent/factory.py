@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-from app.agent.builder import build_agent_graph
-from app.agent.memory_intent_graph import MemoryIntentGraph
 from app.agent.middleware.prompt_sanitizer import PromptSanitizerMiddleware
-from app.agent.prompt_loader import load_prompt
-from app.agent.runtime import AgentRuntime, LangChainAgentRuntime
+from app.agent.orchestration_runtime import LangGraphMvpRuntime
+from app.agent.runtime import AgentRuntime
 from app.agent.tools.context import ToolRequestContextManager
 from app.crm.providers import CRMProvider
 from app.knowledge.providers import KnowledgeProvider
 from app.memory.attachments_store import AttachmentStore
 from app.memory.session_manager import SessionManager
-
-logger = logging.getLogger(__name__)
 
 
 def build_agent(
@@ -33,7 +28,7 @@ def build_agent(
     knowledge_learn_confidence_threshold: float = 0.75,
     knowledge_learn_detector_model_name: str = "anthropic.claude-3-haiku-20240307-v1:0",
     knowledge_learn_detector_region: str = "us-east-1",
-    runtime_backend: str = "langchain",
+    runtime_backend: str = "langgraph_mvp",
     runtime_strict: bool = False,
     model_name: str = "anthropic.claude-3-5-sonnet-20241022-v2:0",
     small_model_name: str = "anthropic.claude-3-haiku-20240307-v1:0",
@@ -45,55 +40,30 @@ def build_agent(
     memory_intent_model_name: str | None = None,
     checkpointer_manager: Any | None = None,
 ) -> AgentRuntime:
+    # Legacy arguments remain in signature for API compatibility.
+
+    backend = runtime_backend.strip().lower()
+    if backend != "langgraph_mvp":
+        raise ValueError(
+            "Unsupported runtime backend. AGENT_RUNTIME_BACKEND must be 'langgraph_mvp'."
+        )
+
     sanitizer = PromptSanitizerMiddleware()
-    system_prompt = load_prompt(prompt_name)
-
-    if runtime_backend.lower() != "langchain":
-        raise ValueError("Only LangChain runtime is supported. Set AGENT_RUNTIME_BACKEND=langchain.")
-
-    memory_intent_graph: MemoryIntentGraph | None = None
-    if memory_intent_enabled:
-        memory_intent_graph = MemoryIntentGraph(
-            model_name=memory_intent_model_name or small_model_name,
-            aws_region=aws_region,
-        )
-
-    def graph_factory(checkpointer: Any | None) -> Any:
-        return build_agent_graph(
-            model_name=model_name,
-            small_model_name=small_model_name,
-            aws_region=aws_region,
-            temperature=model_temperature,
-            system_prompt=system_prompt,
-            crm_provider=crm_provider,
-            knowledge_provider=knowledge_provider,
-            tool_context_manager=tool_context_manager,
-            owner_notify_enabled=owner_notify_enabled,
-            owner_whatsapp_number=owner_whatsapp_number,
-            owner_phone_number_id=owner_phone_number_id,
-            whatsapp_meta_access_token=whatsapp_meta_access_token,
-            whatsapp_meta_api_version=whatsapp_meta_api_version,
-            knowledge_search_default_limit=knowledge_search_default_limit,
-            knowledge_learn_confidence_threshold=knowledge_learn_confidence_threshold,
-            knowledge_learn_detector_model_name=knowledge_learn_detector_model_name,
-            knowledge_learn_detector_region=knowledge_learn_detector_region,
-            enable_summarization=langchain_summarization_enabled,
-            checkpointer=checkpointer,
-        )
-
-    try:
-        return LangChainAgentRuntime(
-            session_manager=session_manager,
-            attachment_store=attachment_store,
-            tool_context_manager=tool_context_manager,
-            sanitizer=sanitizer,
-            graph_factory=graph_factory,
-            checkpointer_manager=checkpointer_manager,
-            memory_intent_graph=memory_intent_graph,
-        )
-    except Exception as exc:  # pragma: no cover - optional path
-        logger.exception("langchain_runtime_init_failed")
-        message = "langchain runtime initialization failed"
-        if runtime_strict:
-            message = "langchain runtime requested but initialization failed"
-        raise RuntimeError(message) from exc
+    return LangGraphMvpRuntime(
+        session_manager=session_manager,
+        attachment_store=attachment_store,
+        tool_context_manager=tool_context_manager,
+        sanitizer=sanitizer,
+        crm_provider=crm_provider,
+        knowledge_provider=knowledge_provider,
+        owner_notify_enabled=owner_notify_enabled,
+        owner_whatsapp_number=owner_whatsapp_number,
+        owner_phone_number_id=owner_phone_number_id,
+        whatsapp_meta_access_token=whatsapp_meta_access_token,
+        whatsapp_meta_api_version=whatsapp_meta_api_version,
+        knowledge_search_default_limit=knowledge_search_default_limit,
+        model_name=model_name,
+        supervisor_model_name=small_model_name,
+        aws_region=aws_region,
+        model_temperature=model_temperature,
+    )
