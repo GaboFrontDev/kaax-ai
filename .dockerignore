@@ -1,0 +1,12 @@
+.git
+.pytest_cache
+.uv-cache
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+.env.local
+infra/cdk/.venv
+infra/cdk/cdk.out

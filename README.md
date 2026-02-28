@@ -212,6 +212,106 @@ make docker-test-redis
 make docker-down
 ```
 
+## Deploy simple en AWS con CDK (sin consola manual)
+
+Se incluye scaffold en `infra/cdk` para desplegar `kaax-ai` en ECS Fargate con ALB.
+
+Preparacion:
+
+```bash
+cp infra/cdk/config/environments.example.json infra/cdk/config/environments.json
+# editar account/region/agents/env vars/secret_name/cpu_architecture
+# para HTTPS: enable_https=true + certificate_arn (+ public_base_url opcional)
+```
+
+Bootstrap y deploy:
+
+```bash
+make cdk-bootstrap
+make cdk-deploy ENV=dev AGENT=default
+```
+
+Para habilitar HTTPS en ALB (ejemplo en `environments.json`):
+
+```json
+{
+  "enable_https": true,
+  "redirect_http": true,
+  "certificate_arn": "arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "public_base_url": "https://api.tu-dominio.com"
+}
+```
+
+Override de secret por flags (desde tu env):
+
+```bash
+export CDK_SECRET_NAME=kaax/dev/default
+export CDK_SECRET_KEYS=API_TOKENS,DB_DSN,AWS_REGION,MODEL_NAME,SMALL_MODEL,WHATSAPP_META_VERIFY_TOKEN,WHATSAPP_META_APP_SECRET,WHATSAPP_META_ACCESS_TOKEN
+make cdk-deploy ENV=dev AGENT=default
+```
+
+Subir/actualizar secrets en AWS Secrets Manager desde tus `export` actuales:
+
+```bash
+export CDK_SECRET_NAME=kaax/dev/default
+export CDK_SECRET_KEYS=API_TOKENS,DB_DSN,AWS_REGION,MODEL_NAME,SMALL_MODEL,WHATSAPP_META_VERIFY_TOKEN,WHATSAPP_META_APP_SECRET,WHATSAPP_META_ACCESS_TOKEN
+make cdk-sync-secrets
+```
+
+Luego despliegas normal:
+
+```bash
+make cdk-deploy ENV=dev AGENT=default
+```
+
+Otros comandos:
+
+```bash
+make cdk-diff ENV=dev AGENT=default
+make cdk-destroy ENV=dev AGENT=default
+```
+
+Config dinamica por agente:
+
+- Publica configuracion de negocio (prompts, politicas, features) en AppConfig:
+
+```bash
+APPCONFIG_APPLICATION_ID=app-xxxxx \
+APPCONFIG_ENVIRONMENT_ID=env-xxxxx \
+APPCONFIG_PROFILE_ID=cfg-xxxxx \
+./ops/publish-config.sh ./path/to/agent-config.json
+```
+
+- Secrets (tokens/API keys/DB) en Secrets Manager, mapeados por `secret_name` (recomendado) o `secret_arn` + `secret_keys` en `environments.json`.
+
+CLI local para operacion AWS (`ops/awsctl.sh`):
+
+```bash
+# estado del stack
+make awsctl AWSCTL_ARGS="status dev default"
+
+# diagnostico completo (stack + ecs + health + secret opcional)
+make awsctl AWSCTL_ARGS="doctor dev default"
+
+# eventos CloudFormation
+make awsctl AWSCTL_ARGS="events dev default"
+
+# eventos ECS (incluye errores tipo unable to pull secrets)
+make awsctl AWSCTL_ARGS="ecs-events dev default"
+
+# estado de tareas
+make awsctl AWSCTL_ARGS="task-status dev default"
+
+# ultimo motivo de fallo de task
+make awsctl AWSCTL_ARGS="task-fail dev default"
+
+# tail de logs app
+make awsctl AWSCTL_ARGS="logs dev default 15m"
+
+# healthcheck a traves del ALB
+make awsctl AWSCTL_ARGS="health dev default"
+```
+
 ## Migraciones Alembic
 
 ```bash

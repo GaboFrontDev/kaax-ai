@@ -3,7 +3,12 @@ PYTHON ?= python3
 .PHONY: run-api run-api-bedrock run-chainlit unit-tests integration-tests test \
 	db-upgrade db-downgrade db-current \
 	docker-up docker-down docker-logs docker-test-postgres \
-	docker-up-redis docker-test-redis
+	docker-up-redis docker-test-redis \
+	cdk-bootstrap cdk-deploy cdk-diff cdk-destroy cdk-sync-secrets awsctl
+
+ENV ?= dev
+AGENT ?= default
+AWSCTL_ARGS ?= help
 
 run-api:
 	source ./.env.local && uv run uvicorn app.api.main:app --host 0.0.0.0 --port 8200 --reload
@@ -80,3 +85,21 @@ docker-test-redis: docker-up-redis
 	REDIS_MASTER_HOST_OVERRIDE=127.0.0.1 \
 	REDIS_MASTER_PORT_OVERRIDE=56378 \
 	uv run --extra dev --extra redis pytest app/tests/integration/test_redis_backend.py
+
+cdk-bootstrap:
+	./ops/bootstrap.sh
+
+cdk-deploy:
+	./ops/deploy.sh $(ENV) $(AGENT)
+
+cdk-diff:
+	./ops/diff.sh $(ENV) $(AGENT)
+
+cdk-destroy:
+	./ops/destroy.sh $(ENV) $(AGENT)
+
+cdk-sync-secrets:
+	./ops/secrets-sync.sh $(CDK_SECRET_NAME)
+
+awsctl:
+	./ops/awsctl.sh $(AWSCTL_ARGS)

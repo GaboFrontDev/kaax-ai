@@ -5,3 +5,6 @@ __pycache__/
 .venv/
 .uv-cache/
 .env.local
+infra/cdk/.venv/
+infra/cdk/cdk.out/
+infra/cdk/config/environments.json
