@@ -4,13 +4,14 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any, Callable, Protocol
+from typing import Any, Optional, Protocol
 
+from langchain_core.tools import BaseTool
+from langchain_core.tools.base import ArgsSchema
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.prompt_loader import load_prompt
 from app.agent.tools.knowledge_search_tool import KnowledgeRequestContext
-from app.knowledge.providers import KnowledgeProvider
 
 logger = logging.getLogger(__name__)
 
@@ -71,29 +72,33 @@ class PendingKnowledgeLearn:
     expires_at: datetime
 
 
-class KnowledgeLearnTool:
-    name = "knowledge_learn"
+class KnowledgeLearnArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    def __init__(
-        self,
-        *,
-        knowledge_provider: KnowledgeProvider,
-        get_context: Callable[[], KnowledgeRequestContext | None],
-        is_admin_requestor: Callable[[str], bool],
-        detector: KnowledgeLearnDetector,
-        confidence_threshold: float = 0.75,
-        pending_ttl_minutes: int = 30,
-    ) -> None:
-        self._knowledge_provider = knowledge_provider
-        self._get_context = get_context
-        self._is_admin_requestor = is_admin_requestor
-        self._detector = detector
-        self._confidence_threshold = confidence_threshold
-        self._pending_ttl = timedelta(minutes=max(1, pending_ttl_minutes))
-        self._pending_by_thread: dict[str, PendingKnowledgeLearn] = {}
+    source_text: str = Field(min_length=1, max_length=3000)
+    confirm: bool = False
+    topic_hint: str | None = Field(default=None, min_length=1)
+
+
+class KnowledgeLearnTool(BaseTool):
+    name: str = "knowledge_learn"
+    description: str = (
+        "Detect and learn new business knowledge from user instructions. "
+        "Only use when the user is explicitly teaching business/service information."
+    )
+    args_schema: Optional[ArgsSchema] = KnowledgeLearnArgs
+    return_direct: bool = False
+    knowledge_provider: Any
+    get_context: Any
+    is_admin_requestor: Any
+    detector: Any
+    confidence_threshold: float = 0.75
+    pending_ttl_minutes: int = 30
+    pending_by_thread: dict[str, PendingKnowledgeLearn] = Field(default_factory=dict)
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
-        context = self._get_context()
+        context = self.get_context()
         if context is None:
             return {
                 "status": "error",
@@ -104,7 +109,7 @@ class KnowledgeLearnTool:
                 "pending": False,
             }
 
-        if not self._is_admin_requestor(context.requestor):
+        if not self.is_admin_requestor(context.requestor):
             logger.info(
                 "knowledge_learn_attempt status=unauthorized tenant_id=%s agent_id=%s requestor=%s thread_id=%s",
                 context.tenant_id,
@@ -140,7 +145,7 @@ class KnowledgeLearnTool:
                 return confirmed
 
         self._drop_expired_pending()
-        detection = await self._detector.detect(source_text=source_text, topic_hint=topic_hint_text)
+        detection = await self.detector.detect(source_text=source_text, topic_hint=topic_hint_text)
 
         if not detection.is_learning_instruction:
             return {
@@ -164,13 +169,14 @@ class KnowledgeLearnTool:
                 "pending": False,
             }
 
-        if float(detection.confidence) < self._confidence_threshold:
-            self._pending_by_thread[context.thread_id] = PendingKnowledgeLearn(
+        if float(detection.confidence) < self.confidence_threshold:
+            pending_ttl = timedelta(minutes=max(1, self.pending_ttl_minutes))
+            self.pending_by_thread[context.thread_id] = PendingKnowledgeLearn(
                 topic=topic,
                 content=content,
                 confidence=float(detection.confidence),
                 reason=detection.reason,
-                expires_at=datetime.now(timezone.utc) + self._pending_ttl,
+                expires_at=datetime.now(timezone.utc) + pending_ttl,
             )
             logger.info(
                 "knowledge_learn_confirm_required tenant_id=%s agent_id=%s thread_id=%s topic=%s confidence=%.3f",
@@ -192,7 +198,7 @@ class KnowledgeLearnTool:
                 "pending": True,
             }
 
-        write_result = await self._knowledge_provider.upsert_topic(
+        write_result = await self.knowledge_provider.upsert_topic(
             tenant_id=context.tenant_id,
             agent_id=context.agent_id,
             topic=topic,
@@ -205,7 +211,7 @@ class KnowledgeLearnTool:
                 "detector_reason": detection.reason,
             },
         )
-        self._pending_by_thread.pop(context.thread_id, None)
+        self.pending_by_thread.pop(context.thread_id, None)
         logger.info(
             "knowledge_learn_saved tenant_id=%s agent_id=%s thread_id=%s topic=%s knowledge_id=%s version=%s",
             context.tenant_id,
@@ -224,15 +230,24 @@ class KnowledgeLearnTool:
             "pending": False,
         }
 
+    async def _arun(self, source_text: str, confirm: bool = False, topic_hint: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"source_text": source_text, "confirm": bool(confirm)}
+        if topic_hint:
+            payload["topic_hint"] = topic_hint
+        return await self.execute(payload)
+
+    def _run(self, source_text: str, confirm: bool = False, topic_hint: str | None = None) -> dict[str, Any]:
+        raise NotImplementedError("KnowledgeLearnTool only supports async execution.")
+
     async def _confirm_pending(self, *, context: KnowledgeRequestContext) -> dict[str, Any] | None:
-        pending = self._pending_by_thread.get(context.thread_id)
+        pending = self.pending_by_thread.get(context.thread_id)
         if pending is None:
             return None
         if pending.expires_at <= datetime.now(timezone.utc):
-            self._pending_by_thread.pop(context.thread_id, None)
+            self.pending_by_thread.pop(context.thread_id, None)
             return None
 
-        write_result = await self._knowledge_provider.upsert_topic(
+        write_result = await self.knowledge_provider.upsert_topic(
             tenant_id=context.tenant_id,
             agent_id=context.agent_id,
             topic=pending.topic,
@@ -246,7 +261,7 @@ class KnowledgeLearnTool:
                 "confirmed": True,
             },
         )
-        self._pending_by_thread.pop(context.thread_id, None)
+        self.pending_by_thread.pop(context.thread_id, None)
         logger.info(
             "knowledge_learn_saved tenant_id=%s agent_id=%s thread_id=%s topic=%s knowledge_id=%s version=%s confirmed=true",
             context.tenant_id,
@@ -267,9 +282,9 @@ class KnowledgeLearnTool:
 
     def _drop_expired_pending(self) -> None:
         now = datetime.now(timezone.utc)
-        expired = [thread_id for thread_id, pending in self._pending_by_thread.items() if pending.expires_at <= now]
+        expired = [thread_id for thread_id, pending in self.pending_by_thread.items() if pending.expires_at <= now]
         for thread_id in expired:
-            self._pending_by_thread.pop(thread_id, None)
+            self.pending_by_thread.pop(thread_id, None)
 
     @staticmethod
     def _looks_like_confirmation(text: str) -> bool:

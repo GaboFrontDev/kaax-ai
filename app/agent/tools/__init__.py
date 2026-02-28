@@ -1,1 +1,1 @@
-"""Tool registry and contracts."""
+"""LangChain tools for the agent runtime."""

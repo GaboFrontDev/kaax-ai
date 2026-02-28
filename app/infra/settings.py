@@ -58,8 +58,6 @@ class Settings:
     cleanup_interval_seconds: int
     cleanup_jitter_seconds: int
     idempotency_ttl_seconds: int
-    tool_retry_attempts: int
-    tool_retry_backoff_ms: int
     db_dsn: str | None
     db_user: str
     db_password: str
@@ -95,8 +93,6 @@ class Settings:
     aws_region: str
     prompt_name: str
     langchain_summarization_enabled: bool
-    llm_intent_router_enabled: bool
-    llm_intent_router_confidence_threshold: float
     lead_owner_notify_enabled: bool
     lead_owner_whatsapp_number: str | None
     whatsapp_meta_owner_phone_number_id: str | None
@@ -133,8 +129,6 @@ class Settings:
             cleanup_interval_seconds=int(os.getenv("CLEANUP_INTERVAL_SECONDS", "60")),
             cleanup_jitter_seconds=int(os.getenv("CLEANUP_JITTER_SECONDS", "20")),
             idempotency_ttl_seconds=int(os.getenv("IDEMPOTENCY_TTL_SECONDS", "3600")),
-            tool_retry_attempts=int(os.getenv("TOOL_RETRY_ATTEMPTS", "2")),
-            tool_retry_backoff_ms=int(os.getenv("TOOL_RETRY_BACKOFF_MS", "200")),
             db_dsn=os.getenv("DB_DSN"),
             db_user=os.getenv("DB_USER", "postgres"),
             db_password=os.getenv("DB_PASSWORD", "postgres"),
@@ -166,7 +160,7 @@ class Settings:
                 if os.getenv("REDIS_MASTER_PORT_OVERRIDE")
                 else None
             ),
-            agent_runtime_backend=os.getenv("AGENT_RUNTIME_BACKEND", "stub"),
+            agent_runtime_backend=os.getenv("AGENT_RUNTIME_BACKEND", "langchain"),
             agent_runtime_strict=_bool_env("AGENT_RUNTIME_STRICT", False),
             model_name=os.getenv(
                 "MODEL_NAME",
@@ -180,10 +174,6 @@ class Settings:
             aws_region=os.getenv("AWS_REGION", "us-east-1"),
             prompt_name=os.getenv("PROMPT_NAME", "agent"),
             langchain_summarization_enabled=_bool_env("LANGCHAIN_SUMMARIZATION_ENABLED", True),
-            llm_intent_router_enabled=_bool_env("LLM_INTENT_ROUTER_ENABLED", True),
-            llm_intent_router_confidence_threshold=float(
-                os.getenv("LLM_INTENT_ROUTER_CONFIDENCE_THRESHOLD", "0.7")
-            ),
             lead_owner_notify_enabled=_bool_env("LEAD_OWNER_NOTIFY_ENABLED", False),
             lead_owner_whatsapp_number=os.getenv("LEAD_OWNER_WHATSAPP_NUMBER"),
             whatsapp_meta_owner_phone_number_id=os.getenv("WHATSAPP_META_OWNER_PHONE_NUMBER_ID"),

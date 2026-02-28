@@ -1,16 +1,32 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
-from app.crm.providers import CRMProvider
+from langchain_core.tools import BaseTool
+from langchain_core.tools.base import ArgsSchema
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class CrmUpsertQuoteTool:
-    name = "crm_upsert_quote"
+class CrmUpsertQuoteArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    def __init__(self, crm_provider: CRMProvider) -> None:
-        self._crm_provider = crm_provider
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CrmUpsertQuoteTool(BaseTool):
+    name: str = "crm_upsert_quote"
+    description: str = "Store quote/lead data in kaax internal CRM registry using a structured payload."
+    args_schema: Optional[ArgsSchema] = CrmUpsertQuoteArgs
+    return_direct: bool = False
+    crm_provider: Any
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         quote = dict(payload["payload"])
-        return await self._crm_provider.upsert_quote(quote)
+        return await self.crm_provider.upsert_quote(quote)
+
+    async def _arun(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self.execute({"payload": payload})
+
+    def _run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError("CrmUpsertQuoteTool only supports async execution.")

@@ -5,7 +5,7 @@ from functools import lru_cache
 
 from app.agent.factory import build_agent
 from app.agent.runtime import AgentRuntime
-from app.agent.tools.registry import ToolRegistry
+from app.agent.tools.context import ToolRequestContextManager
 from app.channels.slack.dlq import SlackDeadLetterQueue
 from app.channels.slack.queue import InMemorySlackMessageQueue, RedisSlackMessageQueue, SlackMessageQueue
 from app.crm.providers import CRMProvider, InMemoryCRMProvider, PostgresCRMProvider
@@ -251,22 +251,11 @@ def get_session_manager() -> SessionManager:
 
 
 @lru_cache
-def get_tool_registry() -> ToolRegistry:
+def get_tool_context_manager() -> ToolRequestContextManager:
     settings = get_settings()
-    return ToolRegistry(
-        crm_provider=get_crm_provider(),
-        knowledge_provider=get_knowledge_provider(),
-        owner_notify_enabled=settings.lead_owner_notify_enabled,
-        owner_whatsapp_number=settings.lead_owner_whatsapp_number,
-        owner_phone_number_id=settings.whatsapp_meta_owner_phone_number_id,
-        whatsapp_meta_access_token=settings.whatsapp_meta_access_token,
-        whatsapp_meta_api_version=settings.whatsapp_meta_api_version,
-        knowledge_admin_requestors=settings.knowledge_admin_requestors,
-        knowledge_search_default_limit=settings.knowledge_search_default_limit,
-        knowledge_learn_confidence_threshold=settings.knowledge_learn_confidence_threshold,
-        knowledge_learn_detector_model_name=settings.small_model_name,
-        knowledge_learn_detector_region=settings.aws_region,
+    return ToolRequestContextManager(
         agent_id=settings.agent_id,
+        knowledge_admin_requestors=settings.knowledge_admin_requestors,
     )
 
 
@@ -348,9 +337,18 @@ def get_agent_runtime() -> AgentRuntime:
     return build_agent(
         session_manager=get_session_manager(),
         attachment_store=get_attachment_store(),
-        tool_registry=get_tool_registry(),
-        tool_retry_attempts=settings.tool_retry_attempts,
-        tool_retry_backoff_ms=settings.tool_retry_backoff_ms,
+        crm_provider=get_crm_provider(),
+        knowledge_provider=get_knowledge_provider(),
+        tool_context_manager=get_tool_context_manager(),
+        owner_notify_enabled=settings.lead_owner_notify_enabled,
+        owner_whatsapp_number=settings.lead_owner_whatsapp_number,
+        owner_phone_number_id=settings.whatsapp_meta_owner_phone_number_id,
+        whatsapp_meta_access_token=settings.whatsapp_meta_access_token,
+        whatsapp_meta_api_version=settings.whatsapp_meta_api_version,
+        knowledge_search_default_limit=settings.knowledge_search_default_limit,
+        knowledge_learn_confidence_threshold=settings.knowledge_learn_confidence_threshold,
+        knowledge_learn_detector_model_name=settings.small_model_name,
+        knowledge_learn_detector_region=settings.aws_region,
         runtime_backend=settings.agent_runtime_backend,
         runtime_strict=settings.agent_runtime_strict,
         model_name=settings.model_name,
@@ -359,8 +357,6 @@ def get_agent_runtime() -> AgentRuntime:
         model_temperature=settings.model_temperature,
         prompt_name=settings.prompt_name,
         langchain_summarization_enabled=settings.langchain_summarization_enabled,
-        llm_intent_router_enabled=settings.llm_intent_router_enabled,
-        llm_intent_router_confidence_threshold=settings.llm_intent_router_confidence_threshold,
         checkpointer_manager=get_langgraph_checkpointer_manager(),
     )
 

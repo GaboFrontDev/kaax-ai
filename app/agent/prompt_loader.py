@@ -20,7 +20,6 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "Reglas: no inventar resultados de tools; pedir aclaración cuando falten datos críticos. "
         "Idioma: responde siempre en español neutro, salvo que el usuario pida explícitamente otro idioma."
     ),
-    "intent_router": "Clasifica intención en JSON estricto y no ejecutes tools.",
 }
 
 _PROMPT_CACHE: dict[str, str] = {}

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Callable
+from typing import Any, Optional
 
-from app.knowledge.providers import KnowledgeProvider
+from langchain_core.tools import BaseTool
+from langchain_core.tools.base import ArgsSchema
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
@@ -17,31 +19,38 @@ class KnowledgeRequestContext:
     agent_id: str
 
 
-class KnowledgeSearchTool:
-    name = "knowledge_search"
+class KnowledgeSearchArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    def __init__(
-        self,
-        *,
-        knowledge_provider: KnowledgeProvider,
-        get_context: Callable[[], KnowledgeRequestContext | None],
-        default_limit: int = 5,
-    ) -> None:
-        self._knowledge_provider = knowledge_provider
-        self._get_context = get_context
-        self._default_limit = max(1, default_limit)
+    query: str = Field(min_length=1)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class KnowledgeSearchTool(BaseTool):
+    name: str = "knowledge_search"
+    description: str = (
+        "Search business knowledge learned for the current tenant and agent. "
+        "Use this for FAQ/product/service questions before drafting final answers."
+    )
+    args_schema: Optional[ArgsSchema] = KnowledgeSearchArgs
+    return_direct: bool = False
+    knowledge_provider: Any
+    get_context: Any
+    default_limit: int = 5
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
-        context = self._get_context()
+        query = str(payload.get("query") or "").strip()
+        limit = int(payload.get("limit") or max(1, self.default_limit))
+
+        context = self.get_context()
         if context is None:
             return {"error": "knowledge_search_context_unavailable"}
 
-        query = str(payload.get("query") or "").strip()
         if not query:
             return {"matches": []}
 
-        limit = int(payload.get("limit") or self._default_limit)
-        matches = await self._knowledge_provider.search(
+        matches = await self.knowledge_provider.search(
             tenant_id=context.tenant_id,
             agent_id=context.agent_id,
             query=query,
@@ -67,3 +76,9 @@ class KnowledgeSearchTool:
                 for match in matches
             ]
         }
+
+    async def _arun(self, query: str, limit: int = 5) -> dict[str, Any]:
+        return await self.execute({"query": query, "limit": limit})
+
+    def _run(self, query: str, limit: int = 5) -> dict[str, Any]:
+        raise NotImplementedError("KnowledgeSearchTool only supports async execution.")
