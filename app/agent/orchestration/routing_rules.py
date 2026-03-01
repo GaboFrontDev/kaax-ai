@@ -38,6 +38,7 @@ _PRODUCT_KEYWORDS = (
 _PRICING_KEYWORDS = (
     "precio",
     "precios",
+    "costo",
     "plan",
     "planes",
     "cuanto cuesta",
@@ -54,6 +55,21 @@ _PURCHASE_KEYWORDS = (
     "agendar",
     "agenda",
     "llamada",
+    "contacten",
+    "me contacten",
+    "contactarme",
+    "quiero que me contacten",
+    "llamenme",
+    "llamen",
+    "comenzar",
+    "empezar",
+    "iniciar",
+    "iniciar con",
+    "comenzar a usar",
+    "empezar a usar",
+    "quiero comenzar",
+    "quiero empezar",
+    "usar kaax",
 )
 _COMMERCIAL_SIGNAL_KEYWORDS = (
     "demo",
@@ -68,6 +84,17 @@ _COMMERCIAL_SIGNAL_KEYWORDS = (
     "implementar",
     "implementacion",
     "evaluar implementacion",
+    "contacten",
+    "me contacten",
+    "contactarme",
+    "llamenme",
+    "llamen",
+    "comenzar",
+    "empezar",
+    "iniciar",
+    "comenzar a usar",
+    "empezar a usar",
+    "usar kaax",
 )
 _URGENCY_KEYWORDS = (
     "hoy",
@@ -78,6 +105,14 @@ _ADVANCE_KEYWORDS = (
     "avanzar",
     "procedamos",
     "empecemos",
+    "continuar",
+    "continuemos",
+    "seguir",
+    "sigamos",
+    "pasemos",
+    "pasar",
+    "ya te los di",
+    "ya se los di",
 )
 _NEED_KEYWORDS = (
     "necesito",
@@ -113,6 +148,10 @@ _SCHEDULE_WITH_HINT_RE = re.compile(
     r"(?:horario|disponibilidad|contacto|llamarme|llamame|contactarme|agendar)\s*[:\-]?\s*([^.,;!?]{3,80})",
     flags=re.IGNORECASE,
 )
+_SCHEDULE_RANGE_RE = re.compile(
+    r"\bde\s+\d{1,2}(?::\d{2})?\s*(?:a|-|hasta)\s*\d{1,2}(?::\d{2})?(?:\s*(?:entre semana|de lunes a viernes|lunes a viernes|l-v))?\b",
+    flags=re.IGNORECASE,
+)
 _NAME_PATTERNS = (
     re.compile(
         r"\bmi nombre es\s+([a-zA-Z][a-zA-Z'\-]{1,30}(?:\s+[a-zA-Z][a-zA-Z'\-]{1,30}){0,2})(?=\s*(?:,|\.|;|$|\sy\smi\b))",
@@ -124,6 +163,18 @@ _NAME_PATTERNS = (
     ),
     re.compile(
         r"\bme llamo\s+([a-zA-Z][a-zA-Z'\-]{1,30}(?:\s+[a-zA-Z][a-zA-Z'\-]{1,30}){0,2})(?=\s*(?:,|\.|;|$|\sy\smi\b))",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:mi\s+)?nombre\s+es\s+([a-zA-Z][a-zA-Z'\-]{1,30}(?:\s+[a-zA-Z][a-zA-Z'\-]{1,30}){0,2})(?=\s*(?:,|\.|;|$|\sy\smi\b))",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*([a-zA-Z][a-zA-Z'\-]{1,30}(?:\s+[a-zA-Z][a-zA-Z'\-]{1,30}){0,2})\s*(?:,|;)?\s*(?:numero|telefono|tel|phone|cel)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*([a-zA-Z][a-zA-Z'\-]{1,30}(?:\s+[a-zA-Z][a-zA-Z'\-]{1,30}){0,2})\s+\+?\d",
         flags=re.IGNORECASE,
     ),
 )
@@ -185,6 +236,8 @@ def derive_router_and_state(
     state = normalize_conversation_state(conversation_state)
     captured = state.captured.model_copy(deep=True)
 
+    previous_missing_fields = _compute_missing_fields(state.captured.model_dump())
+
     if _is_missing(captured.contact_name):
         captured.contact_name = _extract_contact_name(user_message)
     if _is_missing(captured.phone):
@@ -193,6 +246,10 @@ def derive_router_and_state(
         captured.contact_schedule = _extract_contact_schedule(user_message)
 
     missing_fields = _compute_missing_fields(captured.model_dump())
+    has_contact_progress = _has_contact_progress(
+        previous_missing_fields=previous_missing_fields,
+        current_missing_fields=missing_fields,
+    )
     normalized_text = _normalize_text(user_message)
     is_greeting = _is_simple_greeting(normalized_text)
     has_support = _contains_any(normalized_text, _SUPPORT_KEYWORDS)
@@ -212,6 +269,7 @@ def derive_router_and_state(
         has_commercial_signal=has_commercial_signal,
         previous_intent=state.lead.intent,
         has_advance_verb=has_advance_verb,
+        has_contact_progress=has_contact_progress,
         normalized_text=normalized_text,
     )
 
@@ -243,10 +301,11 @@ def derive_router_and_state(
         mode: Mode = "handoff"
     elif _should_use_capture_completion(
         was_capture_flow=was_capture_flow,
+        previous_lead_status=state.lead.status,
         has_commercial_signal=has_commercial_signal,
         has_purchase=has_purchase,
-        has_pricing=has_pricing,
         has_advance_verb=has_advance_verb,
+        has_contact_progress=has_contact_progress,
         missing_fields=missing_fields,
     ):
         mode = "capture_completion"
@@ -360,6 +419,7 @@ def _resolve_intent(
     has_commercial_signal: bool,
     previous_intent: Intent,
     has_advance_verb: bool,
+    has_contact_progress: bool,
     normalized_text: str,
 ) -> Intent:
     if has_purchase and has_pricing:
@@ -375,6 +435,8 @@ def _resolve_intent(
 
     if has_advance_verb and previous_intent in {"purchase_intent", "pricing", "product_inquiry"}:
         return previous_intent
+    if has_contact_progress and previous_intent in {"purchase_intent", "pricing", "product_inquiry"}:
+        return previous_intent
     if has_commercial_signal and previous_intent in {"purchase_intent", "pricing"}:
         return previous_intent
     if _is_pricing_followup(normalized_text) and previous_intent in {"pricing", "purchase_intent"}:
@@ -385,19 +447,33 @@ def _resolve_intent(
 def _should_use_capture_completion(
     *,
     was_capture_flow: bool,
+    previous_lead_status: str,
     has_commercial_signal: bool,
     has_purchase: bool,
-    has_pricing: bool,
     has_advance_verb: bool,
+    has_contact_progress: bool,
     missing_fields: list[MissingField],
 ) -> bool:
     if has_purchase:
         return True
+    if was_capture_flow and previous_lead_status != "calificado":
+        # Keep capture mode sticky until lead is either captured or explicitly disqualified.
+        return True
     if has_commercial_signal and has_advance_verb:
         return True
-    if was_capture_flow and (has_advance_verb or has_pricing or not missing_fields):
+    if has_contact_progress:
+        return True
+    if was_capture_flow and previous_lead_status != "calificado" and (has_advance_verb or has_contact_progress):
         return True
     return False
+
+
+def _has_contact_progress(
+    *,
+    previous_missing_fields: list[MissingField],
+    current_missing_fields: list[MissingField],
+) -> bool:
+    return len(current_missing_fields) < len(previous_missing_fields)
 
 
 def _derive_lead_status(
@@ -408,8 +484,12 @@ def _derive_lead_status(
 ) -> str:
     if previous_status == "no_calificado":
         return previous_status
+    if previous_status == "calificado" and mode != "capture_completion":
+        return previous_status
     if mode == "capture_completion" and not missing_fields:
         return "calificado"
+    if mode == "capture_completion" and missing_fields:
+        return "en_revision"
     return "en_revision"
 
 
@@ -493,6 +573,12 @@ def _extract_contact_schedule(message: str) -> str | None:
     hinted = _SCHEDULE_WITH_HINT_RE.search(raw)
     if hinted is not None:
         value = hinted.group(1).strip()
+        if value:
+            return value[:80]
+
+    range_match = _SCHEDULE_RANGE_RE.search(raw)
+    if range_match is not None:
+        value = range_match.group(0).strip(" .,:;")
         if value:
             return value[:80]
 

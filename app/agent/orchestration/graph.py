@@ -15,7 +15,6 @@ from app.agent.orchestration.routing_rules import derive_router_and_state
 from app.agent.orchestration.schemas import OrchestrationState, RouterDecision
 from app.agent.orchestration.subagents import (
     SubagentRunner,
-    invoke_core_capture,
     invoke_greeting,
     invoke_inventory,
     invoke_knowledge,
@@ -134,10 +133,11 @@ def build_mvp_orchestration_graph(
                 missing_fields=fallback_router.missing_fields,
             )
         else:
-            router = _apply_router_guardrails(
+            llm_candidate = _apply_router_guardrails(
                 router=llm_router,
                 missing_fields=fallback_router.missing_fields,
             )
+            router = _prefer_fallback_router(fallback=fallback_router, llm_candidate=llm_candidate)
             conversation_state.lead.intent = router.intent
             conversation_state.lead.qualification = router.qualification
             conversation_state.mode = router.mode
@@ -164,18 +164,6 @@ def build_mvp_orchestration_graph(
         missing_fields = list(router.missing_fields)
         if not missing_fields:
             return {"draft_response": "Confirmado. Procedere al registro de su solicitud comercial."}
-
-        llm_response = await invoke_core_capture(
-            runner=subagent_runner,
-            user_message=state.last_user_message,
-            context={
-                "router": router.model_dump(),
-                "conversation_state": state.conversation_state.model_dump(),
-                "missing_fields": missing_fields,
-            },
-        )
-        if llm_response:
-            return {"draft_response": llm_response}
 
         question = _build_missing_fields_question(missing_fields)
         return {"draft_response": question}
@@ -207,6 +195,28 @@ def build_mvp_orchestration_graph(
                     "Hola. Soy Kaax AI. Automatizamos atencion y calificacion de prospectos en WhatsApp. "
                     "Desea soporte o evaluar implementacion?"
                 )
+            }
+
+        if _asks_contact_timeline(state.last_user_message):
+            captured = state.conversation_state.captured
+            if state.conversation_state.lead.status == "calificado":
+                schedule = (captured.contact_schedule or "").strip()
+                if schedule:
+                    return {
+                        "draft_response": (
+                            "Tu solicitud ya esta registrada. Un asesor te contactara en el horario indicado: "
+                            f"{schedule}."
+                        )
+                    }
+                return {
+                    "draft_response": (
+                        "Tu solicitud ya esta registrada. Un asesor se pondra en contacto contigo a la brevedad."
+                    )
+                }
+
+        if _asks_for_user_info(state.last_user_message):
+            return {
+                "draft_response": _build_user_info_response(state.conversation_state.model_dump())
             }
 
         matches = await _search_knowledge(
@@ -275,6 +285,7 @@ def build_mvp_orchestration_graph(
         )
 
         normalized_message = (state.last_user_message or "").lower()
+        is_pricing_request = _is_pricing_request(normalized_message)
         relevant = _pick_relevant_match(state.last_user_message, matches)
         snapshot_summary = (state.conversation_state.pricing_context.verified_summary or "").strip()
         asks_period = "mensual" in normalized_message or "anual" in normalized_message
@@ -319,14 +330,14 @@ def build_mvp_orchestration_graph(
                 f"{pricing_question}"
             )
 
-        # Fallback comercial oficial cuando el usuario pide precio y no hay monto claro.
-        if _is_pricing_request(normalized_message) and not conflict:
+        # For pricing turns, force canonical commercial response to avoid invented figures.
+        if is_pricing_request and not conflict:
             response = _enforce_pricing_answer(
                 base_response=response,
                 normalized_message=normalized_message,
             )
 
-        if not conflict:
+        if not conflict and not is_pricing_request:
             llm_response = await invoke_inventory(
                 runner=subagent_runner,
                 user_message=state.last_user_message,
@@ -341,11 +352,6 @@ def build_mvp_orchestration_graph(
                 },
             )
             if llm_response:
-                if _is_pricing_request(normalized_message):
-                    llm_response = _enforce_pricing_answer(
-                        base_response=llm_response,
-                        normalized_message=normalized_message,
-                    )
                 response = llm_response
 
         if state.router is not None and state.router.intent == "purchase_intent":
@@ -614,7 +620,8 @@ def _coerce_safe_router_fallback(*, router: RouterDecision, missing_fields: list
 
 
 def _apply_router_guardrails(*, router: RouterDecision, missing_fields: list[str]) -> RouterDecision:
-    normalized_missing = _normalize_missing_fields(router.missing_fields or missing_fields)
+    # Missing contact fields are extracted deterministically; do not trust LLM-provided missing_fields.
+    normalized_missing = _normalize_missing_fields(missing_fields)
     candidate = router.model_copy(deep=True)
     candidate.missing_fields = normalized_missing
 
@@ -637,6 +644,22 @@ def _apply_router_guardrails(*, router: RouterDecision, missing_fields: list[str
         candidate.next_action = "ask_question"
 
     return candidate
+
+
+def _prefer_fallback_router(*, fallback: RouterDecision, llm_candidate: RouterDecision) -> RouterDecision:
+    guarded_fallback = _apply_router_guardrails(router=fallback, missing_fields=fallback.missing_fields)
+
+    if guarded_fallback.mode in {"capture_completion", "handoff"}:
+        return guarded_fallback
+    if guarded_fallback.next_action == "capture_lead":
+        return guarded_fallback
+    if guarded_fallback.intent in {"pricing", "purchase_intent"} and llm_candidate.intent == "unknown":
+        return guarded_fallback
+    if guarded_fallback.intent == "pricing" and llm_candidate.agent != "inventory":
+        return guarded_fallback
+    if guarded_fallback.mode == "support_answer" and llm_candidate.mode != "support_answer":
+        return guarded_fallback
+    return llm_candidate
 
 
 def _normalize_tool_result(raw: Any) -> dict[str, Any] | None:
@@ -786,7 +809,63 @@ def _is_pricing_request(normalized_message: str) -> bool:
     return bool(re.search(r"\bplan(?:es)?\b", normalized_message))
 
 
+def _asks_for_user_info(message: str) -> bool:
+    normalized = _normalize_text(message)
+    return any(
+        token in normalized
+        for token in (
+            "mi informacion",
+            "mis datos",
+            "mi info",
+            "que informacion tienes de mi",
+            "que datos tienes de mi",
+            "puedes decirme mi informacion",
+            "puedes decirme mis datos",
+        )
+    )
+
+
+def _asks_contact_timeline(message: str) -> bool:
+    normalized = _normalize_text(message)
+    return any(
+        token in normalized
+        for token in (
+            "cuando se pondran en contacto",
+            "cuando me contactan",
+            "cuando me contactaran",
+            "cuando me llaman",
+            "cuando se comunican",
+            "cuando me escriben",
+        )
+    )
+
+
+def _build_user_info_response(conversation_state: dict[str, Any]) -> str:
+    captured = conversation_state.get("captured") if isinstance(conversation_state, dict) else {}
+    if not isinstance(captured, dict):
+        captured = {}
+
+    name = str(captured.get("contact_name") or "").strip()
+    phone = str(captured.get("phone") or "").strip()
+    schedule = str(captured.get("contact_schedule") or "").strip()
+
+    parts: list[str] = []
+    if name:
+        parts.append(f"Nombre: {name}.")
+    if phone:
+        parts.append(f"Telefono: {phone}.")
+    if schedule:
+        parts.append(f"Horario: {schedule}.")
+
+    if not parts:
+        return "Aun no tengo datos de contacto confirmados en esta conversacion."
+    return "Esta es la informacion que tengo registrada: " + " ".join(parts)
+
+
 def _enforce_pricing_answer(*, base_response: str, normalized_message: str) -> str:
+    if _is_pricing_request(normalized_message):
+        return _build_official_pricing_response(normalized_message=normalized_message)
+
     monthly_line = "El precio del plan mensual es 18,000 MXN + IVA al mes."
     annual_line = "No tenemos tarifa anual publicada en este momento; se cotiza por separado."
 
@@ -814,6 +893,25 @@ def _enforce_pricing_answer(*, base_response: str, normalized_message: str) -> s
     if has_price_figure:
         return text
     return f"{monthly_line} Si desea, tambien puedo cotizar un esquema anual."
+
+
+def _build_official_pricing_response(*, normalized_message: str) -> str:
+    monthly_line = "El precio del plan Agente Pro es 18,000 MXN + IVA al mes."
+    annual_line = "No tenemos tarifa anual publicada en este momento; se cotiza por separado."
+    includes_line = (
+        "Incluye agente de IA en WhatsApp, tokens ilimitados, integracion con su CRM actual, "
+        "configuracion e implementacion completa, soporte mensual y disponibilidad 24/7."
+    )
+    excludes_line = "La licencia del CRM no esta incluida; corre por cuenta del cliente."
+
+    wants_annual = "anual" in normalized_message
+    wants_monthly = ("mensual" in normalized_message) or ("mes" in normalized_message)
+
+    if wants_annual:
+        return f"{monthly_line} {annual_line} {includes_line} {excludes_line}"
+    if wants_monthly:
+        return f"{monthly_line} {includes_line} {excludes_line}"
+    return f"{monthly_line} {annual_line} {includes_line} {excludes_line}"
 
 
 def _pricing_facts_conflict(snapshot_summary: str, kb_summary: str) -> bool:

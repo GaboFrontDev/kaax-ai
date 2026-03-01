@@ -106,7 +106,7 @@ def test_router_extracts_captured_fields_when_present() -> None:
     assert updated.captured.phone == "+5215550000001"
     assert updated.captured.contact_schedule == "10 am"
     assert router.missing_fields == []
-    assert updated.lead.status == "en_revision"
+    assert updated.lead.status == "calificado"
 
 
 def test_router_keeps_capture_completion_with_full_contact_and_procedamos() -> None:
@@ -158,3 +158,72 @@ def test_router_keeps_pricing_intent_for_short_followup_mensual() -> None:
     assert router.intent == "pricing"
     assert router.agent == "inventory"
     assert updated.lead.intent == "pricing"
+
+
+def test_router_extracts_contact_from_short_format_omar_numero_de_9_a_6() -> None:
+    router, updated = derive_router_and_state(
+        user_message="omar numero 5544332211 de 9 a 6 entre semana",
+        conversation_state=ConversationState(mode="capture_completion"),
+    )
+    assert updated.captured.contact_name == "omar"
+    assert updated.captured.phone == "5544332211"
+    assert updated.captured.contact_schedule == "de 9 a 6 entre semana"
+    assert router.mode == "capture_completion"
+    assert router.next_action == "capture_lead"
+
+
+def test_router_extracts_name_from_nombre_es_format() -> None:
+    router, updated = derive_router_and_state(
+        user_message="nombre es gabriel",
+        conversation_state=ConversationState(mode="capture_completion"),
+    )
+    assert updated.captured.contact_name == "gabriel"
+    assert router.mode == "capture_completion"
+    assert router.next_action == "ask_question"
+    assert "phone" in router.missing_fields
+    assert "contact_schedule" in router.missing_fields
+
+
+def test_router_keeps_capture_mode_sticky_until_calificado() -> None:
+    router, updated = derive_router_and_state(
+        user_message="ya te los di",
+        conversation_state=ConversationState(
+            mode="capture_completion",
+            captured=CapturedContact(
+                contact_name="Gabriel",
+                phone=None,
+                contact_schedule="de 9 a 7",
+            ),
+            lead=LeadState(
+                intent="purchase_intent",
+                qualification="hot",
+                status="en_revision",
+            ),
+        ),
+    )
+    assert router.mode == "capture_completion"
+    assert router.agent == "core_capture"
+    assert router.next_action == "ask_question"
+    assert router.missing_fields == ["phone"]
+    assert updated.mode == "capture_completion"
+    assert updated.lead.status == "en_revision"
+
+
+def test_router_does_not_stay_in_capture_for_generic_pricing_after_capture_done() -> None:
+    router, updated = derive_router_and_state(
+        user_message="que costo tiene y que incluye?",
+        conversation_state=ConversationState(
+            mode="capture_completion",
+            captured=CapturedContact(
+                contact_name="Omar",
+                phone="5544332211",
+                contact_schedule="de 9 a 6 entre semana",
+            ),
+            lead=LeadState(intent="purchase_intent", qualification="hot", status="calificado"),
+        ),
+    )
+    assert router.mode == "discovery"
+    assert router.agent == "inventory"
+    assert router.intent == "pricing"
+    assert router.next_action == "answer"
+    assert updated.mode == "discovery"
