@@ -70,7 +70,17 @@ class CaptureLeadIfReadyTool(BaseTool):
                 "structured_payload": structured_payload,
             }
 
-        crm_result = await self.crm_upsert_tool.execute({"payload": structured_payload})
+        crm_payload = dict(structured_payload)
+        crm_context = crm_payload.get("crm_context")
+        if isinstance(crm_context, dict):
+            external_key = crm_context.get("external_key")
+            if isinstance(external_key, str) and external_key.strip():
+                crm_payload["external_key"] = external_key.strip()
+            quote_id = crm_context.get("quote_id")
+            if isinstance(quote_id, str) and quote_id.strip():
+                crm_payload["quote_id"] = quote_id.strip()
+
+        crm_result = await self.crm_upsert_tool.execute({"payload": crm_payload})
         owner_notification = "skipped"
         owner_notification_error: str | None = None
 

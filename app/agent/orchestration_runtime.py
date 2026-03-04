@@ -149,12 +149,18 @@ class LangGraphMvpRuntime:
                 if isinstance(previous_state, dict)
                 else None
             )
+            previous_messages = (
+                previous_state.get("messages")
+                if isinstance(previous_state, dict)
+                else None
+            )
             conversation_state = normalize_conversation_state(raw_conversation_state)
 
             result = await self._graph.ainvoke(
                 {
                     "thread_id": req.thread_id,
                     "requestor": req.requestor,
+                    "messages": previous_messages if isinstance(previous_messages, list) else [],
                     "last_user_message": user_text,
                     "conversation_state": conversation_state.model_dump(),
                 }
