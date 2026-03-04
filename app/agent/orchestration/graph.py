@@ -29,7 +29,7 @@ def build_mvp_orchestration_graph(
     | None = None,
 ) -> Any:
     # Legacy args are kept in the signature for backward compatibility.
-    _ = (subagent_runner, supervisor_model_name, aws_region, supervisor_temperature, supervisor_override)
+    _ = (supervisor_model_name, aws_region, supervisor_temperature, supervisor_override)
 
     memory_router = MemoryIntentRouterTool(
         knowledge_provider=knowledge_provider,
@@ -41,6 +41,7 @@ def build_mvp_orchestration_graph(
         memory_router=memory_router,
         capture_tool=capture_tool,
         notify_owner=notify_owner,
+        subagent_runner=subagent_runner,
     )
 
     builder = StateGraph(OrchestrationState)

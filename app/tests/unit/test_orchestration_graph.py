@@ -45,6 +45,37 @@ def test_graph_greeting_starts_sales_discovery() -> None:
     assert "nombre" not in response
 
 
+def test_graph_uses_sales_dialogue_subagent_when_runner_is_provided() -> None:
+    class _StubRunner:
+        async def run(self, *, agent_name, user_message, context):  # noqa: ANN001
+            assert agent_name == "sales_dialogue"
+            assert "draft_response" in context
+            assert isinstance(user_message, str)
+            return "Claro. Kaax AI puede ayudarte a automatizar esto con enfoque comercial. ¿Te muestro un flujo en demo?"
+
+    graph = build_mvp_orchestration_graph(
+        session_manager=_build_session_manager(),
+        knowledge_provider=InMemoryKnowledgeProvider(),
+        tool_context_manager=ToolRequestContextManager(),
+        capture_tool=None,
+        subagent_runner=_StubRunner(),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "thread_id": "t-llm-polish-1",
+                "requestor": "tenant-1",
+                "messages": [],
+                "last_user_message": "hola",
+                "conversation_state": ConversationState().model_dump(),
+            }
+        )
+    )
+
+    assert "automatizar" in str(result.get("final_response") or "").lower()
+
+
 def test_graph_factual_question_uses_memory_router_read() -> None:
     knowledge_provider = InMemoryKnowledgeProvider()
     asyncio.run(
@@ -83,6 +114,32 @@ def test_graph_factual_question_uses_memory_router_read() -> None:
     assert "confirmada" in response
     assert "hubspot" in response
     assert "memory_intent_router" in tools_used
+
+
+def test_graph_services_question_returns_concrete_offer_when_kb_is_empty() -> None:
+    graph = build_mvp_orchestration_graph(
+        session_manager=_build_session_manager(),
+        knowledge_provider=InMemoryKnowledgeProvider(),
+        tool_context_manager=ToolRequestContextManager(),
+        capture_tool=None,
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "thread_id": "t-services-1",
+                "requestor": "tenant-1",
+                "messages": [],
+                "last_user_message": "que servicios tienen?",
+                "conversation_state": ConversationState().model_dump(),
+            }
+        )
+    )
+
+    response = str(result.get("final_response") or "").lower()
+    assert "whatsapp" in response
+    assert "crm" in response
+    assert "calific" in response
 
 
 def test_graph_repeat_question_returns_short_recap() -> None:

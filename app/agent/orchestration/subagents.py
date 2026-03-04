@@ -10,7 +10,7 @@ from app.agent.result_parser import extract_response_text
 
 logger = logging.getLogger(__name__)
 
-SubagentName = Literal["greeting", "core_capture", "knowledge", "inventory"]
+SubagentName = Literal["greeting", "core_capture", "knowledge", "inventory", "sales_dialogue"]
 
 
 class SubagentRunner(Protocol):
@@ -89,10 +89,13 @@ class LangChainSubagentRunner:
 
             prompt_name = self._prompt_name_for(agent_name)
             system_prompt = load_prompt(prompt_name)
+            agent_temperature = float(self._temperature)
+            if agent_name == "sales_dialogue":
+                agent_temperature = max(0.55, min(1.0, agent_temperature + 0.2))
             model = ChatBedrockConverse(
                 model_id=self._model_name,
                 region_name=self._aws_region,
-                temperature=self._temperature,
+                temperature=agent_temperature,
                 disable_streaming=True,
             )
             try:
@@ -117,6 +120,8 @@ class LangChainSubagentRunner:
             return "agent_core_capture"
         if agent_name == "inventory":
             return "agent_inventory"
+        if agent_name == "sales_dialogue":
+            return "agent_sales_dialogue"
         return "agent_knowledge"
 
     @staticmethod
@@ -173,3 +178,14 @@ async def invoke_inventory(
     if runner is None:
         return None
     return await runner.run(agent_name="inventory", user_message=user_message, context=context)
+
+
+async def invoke_sales_dialogue(
+    *,
+    runner: SubagentRunner | None,
+    user_message: str,
+    context: dict[str, Any],
+) -> str | None:
+    if runner is None:
+        return None
+    return await runner.run(agent_name="sales_dialogue", user_message=user_message, context=context)

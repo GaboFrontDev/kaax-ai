@@ -36,6 +36,14 @@ _FACTUAL_KEYWORDS = (
     "implementar",
     "politica",
     "politicas",
+    "servicio",
+    "servicios",
+    "funcionalidad",
+    "funcionalidades",
+    "que ofrecen",
+    "que ofreces",
+    "solucion",
+    "soluciones",
 )
 
 _BUYING_SIGNAL_KEYWORDS = (
